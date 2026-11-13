@@ -192,5 +192,20 @@
     "auto_check": "Başlangıçta güncellemeleri otomatik denetle",
     "open_release": "Sürüm Sayfasını Aç",
     "check_failed": "Güncelleme denetlenemedi"
+  },
+  "hints": {
+    "models_sub": "OpenAI uyumlu herhangi bir sağlayıcı, Anthropic, Gemini, yerel Ollama / LM Studio veya ücretsiz Google Translate ekleyin.",
+    "prompts_sub": "Ctrl+Alt+Sol/Sağ veya Ctrl+Alt+1..9 kısayollarıyla çeviri şablonları arasında hızla geçiş yapın.",
+    "vocab_sub": "Kaydedilen kelimeler ve ifadeler çevirilerde otomatik olarak vurgulanır.",
+    "history_sub": "Son pencere, Alt ile anlık değiştirme, ekran görüntüsü ve manuel çeviriler yerel olarak saklanır.",
+    "settings_sub": "Görünüm temasını, çift dokunuş tetikleyicilerini, arka plan çalışmasını ve uygulama içi güncellemeleri yapılandırın.",
+    "theme_dark_desc": "Yüksek okunabilirlik ve sade vurgularla mat grafit arayüz.",
+    "theme_light_desc": "Gündüz netliği için dengeli açık çalışma alanı.",
+    "language_desc": "Gezinme, ayarlar ve HUD bildirimleri için arayüz dilini seçin.",
+    "double_tap_ms_desc": "İki hızlı dokunuş arasındaki milisaniye cinsinden azami süre.",
+    "restore_clipboard_desc": "Metin yakalama veya değiştirmeden sonra önceki pano içeriğini otomatik geri yükleyin.",
+    "launch_startup_desc": "Oturum açılışında sistem tepsisinde sessizce küçültülmüş başlat.",
+    "show_hud_desc": "İstem değiştirirken veya metin yerleştirirken kompakt yüzen durum hapını göster.",
+    "auto_update_desc": "Langhian başlatıldığında GitHub sürümlerini otomatik denetle."
   }
 }

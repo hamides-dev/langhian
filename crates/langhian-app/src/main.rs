@@ -16,7 +16,10 @@ use langhian_core::{
     history::push_bounded_history, infer_vision_capability,
 };
 use platform::capture::{capture_active_monitor, crop_screen_to_png};
-use platform::clipboard::{capture_selection, replace_with_text, set_clipboard_text};
+use platform::clipboard::{
+    capture_foreground_handle, capture_selection, replace_with_text, restore_foreground_handle,
+    set_clipboard_text,
+};
 use platform::tray::{TrayAction, TrayHandle, build_tray, load_app_icon_rgba};
 use platform::updater_exec::launch_installer;
 use platform::{current_cursor_pos, refresh_shortcut_config, start_keyboard_listener};
@@ -31,7 +34,7 @@ use ui::dashboard::{
 use ui::hud::{HudState, view_hud};
 use ui::modal::{ModalMsg, ModalState, view_modal};
 use ui::snip_overlay::{SnipEvent, SnipState, view_snip_overlay};
-use ui::theme::{bundled_fonts, iced_theme_for};
+use ui::theme::{iced_theme_for, transparent_iced_theme_for};
 
 #[derive(Debug, Clone)]
 enum BridgeEvent {
@@ -42,25 +45,64 @@ enum BridgeEvent {
 static BRIDGE_RX: OnceLock<Mutex<Option<UnboundedReceiver<BridgeEvent>>>> = OnceLock::new();
 
 #[cfg(target_os = "windows")]
-fn acquire_windows_mutex() {
-    use windows_sys::Win32::System::Threading::CreateMutexW;
-    let wide: Vec<u16> = "LanghianTranslationSingleInstanceMutex\0"
+static WAKE_EVENT_HANDLE: std::sync::atomic::AtomicUsize = std::sync::atomic::AtomicUsize::new(0);
+
+#[cfg(target_os = "windows")]
+fn acquire_windows_mutex_or_wake_existing() {
+    use windows_sys::Win32::Foundation::{CloseHandle, ERROR_ALREADY_EXISTS, GetLastError};
+    use windows_sys::Win32::System::Threading::{
+        CreateEventW, CreateMutexW, EVENT_MODIFY_STATE, OpenEventW, SetEvent,
+    };
+
+    let mutex_name: Vec<u16> = "LanghianTranslationSingleInstanceMutex\0"
         .encode_utf16()
         .collect();
+    let event_name: Vec<u16> = "Local\\LanghianWakeDashboardEvent\0"
+        .encode_utf16()
+        .collect();
+
     unsafe {
-        let _ = CreateMutexW(std::ptr::null(), 0, wide.as_ptr());
+        let mutex = CreateMutexW(std::ptr::null(), 0, mutex_name.as_ptr());
+        let err = GetLastError();
+        if mutex.is_null() || err == ERROR_ALREADY_EXISTS {
+            let start_minimized = std::env::args()
+                .any(|a| a == "--minimized" || a == "--background" || a == "--background-only");
+            if !start_minimized {
+                let ev = OpenEventW(EVENT_MODIFY_STATE, 0, event_name.as_ptr());
+                if !ev.is_null() {
+                    let _ = SetEvent(ev);
+                    let _ = CloseHandle(ev);
+                }
+            }
+            if !mutex.is_null() {
+                let _ = CloseHandle(mutex);
+            }
+            std::process::exit(0);
+        }
+
+        // Primary instance: create auto-reset wake event and leak mutex handle intentionally for process lifetime.
+        let ev = CreateEventW(std::ptr::null(), 0, 0, event_name.as_ptr());
+        if !ev.is_null() {
+            WAKE_EVENT_HANDLE.store(ev as usize, std::sync::atomic::Ordering::SeqCst);
+        }
     }
 }
 
 fn main() -> iced::Result {
     #[cfg(target_os = "windows")]
-    acquire_windows_mutex();
+    acquire_windows_mutex_or_wake_existing();
 
-    iced::daemon(LanghianApp::new, LanghianApp::update, LanghianApp::view)
+    let mut daemon = iced::daemon(LanghianApp::new, LanghianApp::update, LanghianApp::view)
         .title(LanghianApp::title)
         .theme(LanghianApp::theme)
         .subscription(LanghianApp::subscription)
-        .run()
+        .default_font(ui::theme::font_ui_default());
+
+    for font_bytes in ui::theme::bundled_fonts() {
+        daemon = daemon.font(font_bytes);
+    }
+
+    daemon.run()
 }
 
 struct LanghianApp {
@@ -79,6 +121,7 @@ struct LanghianApp {
 
     // Window tracking
     dashboard_id: Option<window::Id>,
+    dashboard_opening: bool,
     modal_id: Option<window::Id>,
     snip_id: Option<window::Id>,
     hud_id: Option<window::Id>,
@@ -90,6 +133,7 @@ struct LanghianApp {
     hud: Option<HudState>,
     hud_expires_at: Option<Instant>,
     pending_replace_prev_clip: Option<String>,
+    pending_target_hwnd: isize,
     translation_seq: u64,
 }
 
@@ -103,6 +147,14 @@ enum Message {
     HudTick,
 
     // Async workflow results
+    InPlaceCaptured {
+        target_hwnd: isize,
+        result: Result<platform::clipboard::CapturedSelection, String>,
+    },
+    DoubleCtrlCaptured {
+        target_hwnd: isize,
+        result: Result<platform::clipboard::CapturedSelection, String>,
+    },
     ModalTranslationFinished {
         seq: u64,
         result: Result<(String, Option<String>), TranslationFail>,
@@ -167,7 +219,7 @@ impl LanghianApp {
 
         // Forward tray events into unified bridge
         let (tray_tx, mut tray_rx) = unbounded_channel::<TrayAction>();
-        let bridge_tx_tray = bridge_tx;
+        let bridge_tx_tray = bridge_tx.clone();
         std::thread::spawn(move || {
             while let Some(act) = tray_rx.blocking_recv() {
                 if bridge_tx_tray.send(BridgeEvent::Tray(act)).is_err() {
@@ -177,17 +229,43 @@ impl LanghianApp {
         });
         let tray = build_tray(&config, &i18n, tray_tx).ok();
 
+        #[cfg(target_os = "windows")]
+        {
+            let bridge_tx_wake = bridge_tx.clone();
+            std::thread::spawn(move || {
+                use windows_sys::Win32::Foundation::WAIT_OBJECT_0;
+                use windows_sys::Win32::System::Threading::{INFINITE, WaitForSingleObject};
+                let raw = WAKE_EVENT_HANDLE.load(std::sync::atomic::Ordering::SeqCst);
+                if raw != 0 {
+                    let ev = raw as windows_sys::Win32::Foundation::HANDLE;
+                    loop {
+                        let res = unsafe { WaitForSingleObject(ev, INFINITE) };
+                        if res == WAIT_OBJECT_0 {
+                            if bridge_tx_wake
+                                .send(BridgeEvent::Tray(TrayAction::OpenDashboard))
+                                .is_err()
+                            {
+                                break;
+                            }
+                        } else {
+                            break;
+                        }
+                    }
+                }
+            });
+        }
+
         let app_icon =
             load_app_icon_rgba().and_then(|(rgba, w, h)| window::icon::from_rgba(rgba, w, h).ok());
 
-        let start_minimized = std::env::args().any(|a| a == "--minimized");
+        let start_minimized = std::env::args()
+            .any(|a| a == "--minimized" || a == "--background" || a == "--background-only");
 
-        let mut tasks: Vec<Task<Message>> = bundled_fonts()
-            .into_iter()
-            .map(|bytes| iced::font::load(bytes).map(|_| Message::FontLoaded))
-            .collect();
+        let mut tasks: Vec<Task<Message>> = Vec::new();
+        let mut dashboard_opening = false;
 
         if !start_minimized {
+            dashboard_opening = true;
             tasks.push(open_dashboard_task(app_icon.clone()));
         }
 
@@ -205,6 +283,7 @@ impl LanghianApp {
             tray,
             app_icon,
             dashboard_id: None,
+            dashboard_opening,
             modal_id: None,
             snip_id: None,
             hud_id: None,
@@ -214,6 +293,7 @@ impl LanghianApp {
             hud: None,
             hud_expires_at: None,
             pending_replace_prev_clip: None,
+            pending_target_hwnd: 0,
             translation_seq: 0,
         };
 
@@ -250,8 +330,15 @@ impl LanghianApp {
         }
     }
 
-    fn theme(&self, _window: window::Id) -> Theme {
-        iced_theme_for(self.config.theme)
+    fn theme(&self, window: window::Id) -> Theme {
+        if Some(window) == self.hud_id
+            || Some(window) == self.modal_id
+            || Some(window) == self.snip_id
+        {
+            transparent_iced_theme_for(self.config.theme)
+        } else {
+            iced_theme_for(self.config.theme)
+        }
     }
 
     fn subscription(&self) -> Subscription<Message> {
@@ -286,7 +373,13 @@ impl LanghianApp {
 
             Message::WindowOpened(kind, id) => {
                 match kind {
-                    WindowKind::Dashboard => self.dashboard_id = Some(id),
+                    WindowKind::Dashboard => {
+                        self.dashboard_opening = false;
+                        if let Some(existing) = self.dashboard_id {
+                            return Task::batch([window::close(id), window::gain_focus(existing)]);
+                        }
+                        self.dashboard_id = Some(id);
+                    }
                     WindowKind::Modal => self.modal_id = Some(id),
                     WindowKind::Snip => self.snip_id = Some(id),
                     WindowKind::Hud => self.hud_id = Some(id),
@@ -297,6 +390,7 @@ impl LanghianApp {
             Message::WindowCloseRequested(id) => {
                 if Some(id) == self.dashboard_id {
                     self.dashboard_id = None;
+                    self.dashboard_opening = false;
                 } else if Some(id) == self.modal_id {
                     self.modal_id = None;
                     self.modal = None;
@@ -309,6 +403,101 @@ impl LanghianApp {
                     self.hud_expires_at = None;
                 }
                 window::close(id)
+            }
+
+            Message::InPlaceCaptured {
+                target_hwnd,
+                result,
+            } => {
+                let captured = match result {
+                    Ok(c) => c,
+                    Err(_) => {
+                        if self.config.show_hud {
+                            return self.show_hud_toast(
+                                self.i18n.t("app.status_error"),
+                                self.i18n.t("errors.empty_selection"),
+                                true,
+                            );
+                        }
+                        return Task::none();
+                    }
+                };
+
+                let profile = self.config.active_model().clone();
+                let api_key = self.secrets.get_api_key(&profile.id);
+                let prompt = self.config.active_prompt().clone();
+                let source_lang = self.config.source_language.clone();
+                let target_lang = self.config.target_language.clone();
+                let restore_clip = self.config.restore_clipboard;
+                let client = self.client.clone();
+                let vision_msg = self.i18n.t("errors.vision_unsupported");
+                let key_msg = self.i18n.t("errors.missing_api_key");
+                let rate_msg = self.i18n.t("errors.rate_limited");
+
+                let hud_task = if self.config.show_hud {
+                    self.show_hud_toast(
+                        self.i18n.t("app.title"),
+                        self.i18n.t("hud.translating_inplace"),
+                        false,
+                    )
+                } else {
+                    Task::none()
+                };
+
+                let work_task = Task::perform(
+                    async move {
+                        let req = TranslateRequest {
+                            input: TranslateInput::Text(captured.text.clone()),
+                            source_lang,
+                            target_lang,
+                            prompt,
+                        };
+                        let resp = client
+                            .translate(&profile, api_key.as_deref(), &req)
+                            .await
+                            .map_err(|e| {
+                                map_provider_error(e, &vision_msg, &key_msg, &rate_msg).message
+                            })?;
+
+                        let translated = resp.translated_text.clone();
+                        let prev = captured.previous_clipboard.clone();
+                        let tr_paste = translated.clone();
+                        tokio::task::spawn_blocking(move || {
+                            restore_foreground_handle(target_hwnd);
+                            replace_with_text(&tr_paste, restore_clip, prev)
+                        })
+                        .await
+                        .map_err(|e| e.to_string())??;
+
+                        Ok((captured.text, translated, captured.previous_clipboard))
+                    },
+                    Message::InPlaceFlowFinished,
+                );
+
+                Task::batch([hud_task, work_task])
+            }
+
+            Message::DoubleCtrlCaptured {
+                target_hwnd,
+                result,
+            } => {
+                let captured = match result {
+                    Ok(c) => c,
+                    Err(_) => {
+                        if self.config.show_hud {
+                            return self.show_hud_toast(
+                                self.i18n.t("app.status_error"),
+                                self.i18n.t("errors.empty_selection"),
+                                true,
+                            );
+                        }
+                        return Task::none();
+                    }
+                };
+                self.pending_target_hwnd = target_hwnd;
+                self.pending_replace_prev_clip = captured.previous_clipboard;
+                let modal = ModalState::for_text(captured.text);
+                self.open_or_update_modal(modal, TranslationMode::Modal)
             }
 
             Message::GlobalEscPressed => {
@@ -563,87 +752,44 @@ impl LanghianApp {
     fn ensure_dashboard_open(&mut self) -> Task<Message> {
         if let Some(id) = self.dashboard_id {
             window::gain_focus(id)
+        } else if self.dashboard_opening {
+            Task::none()
         } else {
+            self.dashboard_opening = true;
             open_dashboard_task(self.app_icon.clone())
         }
     }
 
     fn run_double_alt_inplace(&mut self) -> Task<Message> {
-        let profile = self.config.active_model().clone();
-        let api_key = self.secrets.get_api_key(&profile.id);
-        let prompt = self.config.active_prompt().clone();
-        let source_lang = self.config.source_language.clone();
-        let target_lang = self.config.target_language.clone();
-        let restore_clip = self.config.restore_clipboard;
+        let target_hwnd = capture_foreground_handle();
         let auto_select = self.config.shortcuts.auto_select_all_fallback;
-        let client = self.client.clone();
-        let empty_err = self.i18n.t("errors.empty_selection");
-
-        let hud_task = if self.config.show_hud {
-            self.show_hud_toast(
-                self.i18n.t("app.title"),
-                self.i18n.t("hud.translating_inplace"),
-                false,
-            )
-        } else {
-            Task::none()
-        };
-
-        let work_task = Task::perform(
+        Task::perform(
             async move {
-                let captured =
-                    tokio::task::spawn_blocking(move || capture_selection(false, auto_select))
-                        .await
-                        .map_err(|e| e.to_string())?
-                        .map_err(|e| if e == "EMPTY_SELECTION" { empty_err } else { e })?;
-
-                let req = TranslateRequest {
-                    input: TranslateInput::Text(captured.text.clone()),
-                    source_lang,
-                    target_lang,
-                    prompt,
-                };
-                let resp = client
-                    .translate(&profile, api_key.as_deref(), &req)
+                tokio::task::spawn_blocking(move || capture_selection(false, auto_select))
                     .await
-                    .map_err(|e| e.to_string())?;
-
-                let translated = resp.translated_text.clone();
-                let prev = captured.previous_clipboard.clone();
-                let tr_paste = translated.clone();
-                tokio::task::spawn_blocking(move || {
-                    replace_with_text(&tr_paste, restore_clip, prev)
-                })
-                .await
-                .map_err(|e| e.to_string())??;
-
-                Ok((captured.text, translated, captured.previous_clipboard))
+                    .unwrap_or_else(|e| Err(e.to_string()))
             },
-            Message::InPlaceFlowFinished,
-        );
-
-        Task::batch([hud_task, work_task])
+            move |result| Message::InPlaceCaptured {
+                target_hwnd,
+                result,
+            },
+        )
     }
 
     fn run_double_ctrl_modal(&mut self) -> Task<Message> {
+        let target_hwnd = capture_foreground_handle();
         let restore_clip = self.config.restore_clipboard;
-        let captured = match capture_selection(restore_clip, false) {
-            Ok(c) => c,
-            Err(_) => {
-                if self.config.show_hud {
-                    return self.show_hud_toast(
-                        self.i18n.t("app.status_error"),
-                        self.i18n.t("errors.empty_selection"),
-                        true,
-                    );
-                }
-                return Task::none();
-            }
-        };
-
-        self.pending_replace_prev_clip = captured.previous_clipboard;
-        let modal = ModalState::for_text(captured.text);
-        self.open_or_update_modal(modal, TranslationMode::Modal)
+        Task::perform(
+            async move {
+                tokio::task::spawn_blocking(move || capture_selection(restore_clip, false))
+                    .await
+                    .unwrap_or_else(|e| Err(e.to_string()))
+            },
+            move |result| Message::DoubleCtrlCaptured {
+                target_hwnd,
+                result,
+            },
+        )
     }
 
     fn start_screenshot_capture(&mut self) -> Task<Message> {
@@ -671,6 +817,7 @@ impl LanghianApp {
             level: window::Level::AlwaysOnTop,
             resizable: false,
             exit_on_close_request: false,
+            platform_specific: floating_platform_specific(),
             ..Default::default()
         });
         open.map(|id| Message::WindowOpened(WindowKind::Snip, id))
@@ -693,14 +840,15 @@ impl LanghianApp {
         };
 
         let (_, open) = window::open(window::Settings {
-            size: Size::new(540.0, 440.0),
-            min_size: Some(Size::new(420.0, 320.0)),
+            size: Size::new(560.0, 460.0),
+            min_size: Some(Size::new(440.0, 340.0)),
             position: pos,
             decorations: false,
             transparent: true,
             level: window::Level::AlwaysOnTop,
             icon: self.app_icon.clone(),
             exit_on_close_request: false,
+            platform_specific: floating_platform_specific(),
             ..Default::default()
         });
 
@@ -818,20 +966,22 @@ impl LanghianApp {
             detail,
             is_error,
         });
-        self.hud_expires_at = Some(Instant::now() + Duration::from_millis(1600));
+        self.hud_expires_at = Some(Instant::now() + Duration::from_millis(1800));
 
-        if let Some(id) = self.hud_id {
-            return window::gain_focus(id);
+        if self.hud_id.is_some() {
+            // Do NOT steal focus from the user's active app when updating HUD text.
+            return Task::none();
         }
 
         let (_, open) = window::open(window::Settings {
-            size: Size::new(360.0, 56.0),
+            size: Size::new(420.0, 62.0),
             position: window::Position::Specific(Point::new(32.0, 32.0)),
             decorations: false,
             transparent: true,
             level: window::Level::AlwaysOnTop,
             resizable: false,
             exit_on_close_request: false,
+            platform_specific: floating_platform_specific(),
             ..Default::default()
         });
         open.map(|id| Message::WindowOpened(WindowKind::Hud, id))
@@ -997,10 +1147,12 @@ impl LanghianApp {
                 let text = m.translated_text;
                 let restore = self.config.restore_clipboard;
                 let prev = self.pending_replace_prev_clip.take();
+                let target_hwnd = self.pending_target_hwnd;
                 let replace_task = Task::perform(
                     async move {
-                        tokio::time::sleep(Duration::from_millis(80)).await;
+                        tokio::time::sleep(Duration::from_millis(70)).await;
                         let _ = tokio::task::spawn_blocking(move || {
+                            restore_foreground_handle(target_hwnd);
                             replace_with_text(&text, restore, prev)
                         })
                         .await;
@@ -1328,9 +1480,10 @@ impl LanghianApp {
                 }
                 Task::none()
             }
-            DashboardMsg::ModelHeadersChanged(v) => {
+            DashboardMsg::ModelHeadersAction(action) => {
                 if let Some(ed) = self.dashboard.model_editor.as_mut() {
-                    ed.headers_raw = v;
+                    ed.headers_editor.perform(action);
+                    ed.headers_raw = ed.headers_editor.text();
                 }
                 Task::none()
             }
@@ -1774,10 +1927,26 @@ impl LanghianApp {
     }
 }
 
+fn floating_platform_specific() -> window::settings::PlatformSpecific {
+    #[cfg(target_os = "windows")]
+    {
+        window::settings::PlatformSpecific {
+            skip_taskbar: true,
+            undecorated_shadow: false,
+            corner_preference: window::settings::platform::CornerPreference::DoNotRound,
+            ..Default::default()
+        }
+    }
+    #[cfg(not(target_os = "windows"))]
+    {
+        window::settings::PlatformSpecific::default()
+    }
+}
+
 fn open_dashboard_task(icon: Option<window::Icon>) -> Task<Message> {
     let (_, open) = window::open(window::Settings {
-        size: Size::new(980.0, 660.0),
-        min_size: Some(Size::new(760.0, 520.0)),
+        size: Size::new(1020.0, 700.0),
+        min_size: Some(Size::new(820.0, 560.0)),
         position: window::Position::Centered,
         decorations: true,
         transparent: false,

@@ -192,5 +192,20 @@
     "auto_check": "Automatically check for updates on startup",
     "open_release": "Open Release Page",
     "check_failed": "Could not check for updates"
+  },
+  "hints": {
+    "models_sub": "Add any OpenAI-compatible provider, Anthropic, Gemini, local Ollama / LM Studio, or free Google Translate.",
+    "prompts_sub": "Switch translation style templates dynamically using shortcuts Ctrl+Alt+Left/Right or Ctrl+Alt+1..9.",
+    "vocab_sub": "Saved words and phrases are automatically highlighted whenever they appear in translations.",
+    "history_sub": "Recent modal, in-place Alt-replace, screenshot, and manual translations stored locally.",
+    "settings_sub": "Configure appearance, double-tap triggers, background execution, and in-app updates.",
+    "theme_dark_desc": "Matte graphite surfaces with crisp contrast and restrained accents.",
+    "theme_light_desc": "Bright neutral workspace optimized for daytime clarity.",
+    "language_desc": "Choose the display language for navigation, settings, and HUD notices.",
+    "double_tap_ms_desc": "Maximum interval between the two taps in milliseconds.",
+    "restore_clipboard_desc": "Automatically restore your previous clipboard content after capturing or replacing text.",
+    "launch_startup_desc": "Start minimized silently to the system tray on login.",
+    "show_hud_desc": "Display compact floating pill status when switching prompts or replacing text.",
+    "auto_update_desc": "Check GitHub releases automatically when Langhian launches."
   }
 }

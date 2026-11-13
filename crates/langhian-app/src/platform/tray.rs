@@ -63,6 +63,7 @@ pub fn build_tray(
     }));
 
     TrayIconEvent::set_event_handler(Some(move |ev: TrayIconEvent| {
+        #[cfg(not(target_os = "macos"))]
         if let TrayIconEvent::Click {
             button: MouseButton::Left,
             button_state: MouseButtonState::Up,
@@ -71,12 +72,17 @@ pub fn build_tray(
         {
             let _ = tx.send(TrayAction::OpenDashboard);
         }
+        #[cfg(target_os = "macos")]
+        let _ = ev;
     }));
 
-    let tray = TrayIconBuilder::new()
+    let builder = TrayIconBuilder::new()
         .with_menu(Box::new(menu))
         .with_tooltip("Langhian Translation")
-        .with_icon(icon)
+        .with_icon(icon);
+    #[cfg(not(target_os = "macos"))]
+    let builder = builder.with_menu_on_left_click(false);
+    let tray = builder
         .build()
         .map_err(|e| format!("Tray builder failed: {e}"))?;
 
