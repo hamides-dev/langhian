@@ -6,7 +6,9 @@ use tokio::sync::mpsc::UnboundedSender;
 use tray_icon::menu::{
     CheckMenuItem, Menu, MenuEvent, MenuId, MenuItem, PredefinedMenuItem, Submenu,
 };
-use tray_icon::{Icon, MouseButton, MouseButtonState, TrayIcon, TrayIconBuilder, TrayIconEvent};
+use tray_icon::{Icon, TrayIcon, TrayIconBuilder, TrayIconEvent};
+#[cfg(not(target_os = "macos"))]
+use tray_icon::{MouseButton, MouseButtonState};
 
 #[derive(Debug, Clone)]
 pub enum TrayAction {

@@ -191,6 +191,7 @@ pub fn restore_foreground_handle(hwnd: isize) {
     }
 }
 
+#[cfg(target_os = "windows")]
 fn read_clipboard_with_retry(clipboard: &mut Clipboard) -> Option<String> {
     for _ in 0..4 {
         if let Ok(val) = clipboard.get_text()
