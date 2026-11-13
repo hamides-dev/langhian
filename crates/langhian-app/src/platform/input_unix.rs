@@ -72,28 +72,8 @@ fn handle_event(event: Event) {
             }
         }
         EventType::KeyPress(key) => match key {
-            Key::Alt | Key::AltGr => {
-                if let Ok(mut m) = shared.mods.lock() {
-                    if !m.alt {
-                        m.alt = true;
-                        let others = ModifierState { alt: false, ..*m };
-                        if let Ok(mut sm) = shared.sm.lock() {
-                            sm.on_modifier_down(ModifierKind::Alt, others);
-                        }
-                    }
-                }
-            }
-            Key::ControlLeft | Key::ControlRight => {
-                if let Ok(mut m) = shared.mods.lock() {
-                    if !m.ctrl {
-                        m.ctrl = true;
-                        let others = ModifierState { ctrl: false, ..*m };
-                        if let Ok(mut sm) = shared.sm.lock() {
-                            sm.on_modifier_down(ModifierKind::Ctrl, others);
-                        }
-                    }
-                }
-            }
+            Key::Alt | Key::AltGr => on_mod_down(shared, ModifierKind::Alt),
+            Key::ControlLeft | Key::ControlRight => on_mod_down(shared, ModifierKind::Ctrl),
             Key::ShiftLeft | Key::ShiftRight => {
                 if let Ok(mut m) = shared.mods.lock() {
                     m.shift = true;
@@ -108,34 +88,16 @@ fn handle_event(event: Event) {
                 let mods = shared.mods.lock().map(|m| *m).unwrap_or_default();
                 let cfg = shared.config.lock().map(|c| c.clone()).unwrap_or_default();
                 let name = rdev_key_to_name(other);
-                if let Ok(mut sm) = shared.sm.lock() {
-                    if let Some(act) = sm.on_non_modifier_key_down(&name, mods, &cfg) {
-                        let _ = shared.tx.send(act);
-                    }
+                if let Ok(mut sm) = shared.sm.lock()
+                    && let Some(act) = sm.on_non_modifier_key_down(&name, mods, &cfg)
+                {
+                    let _ = shared.tx.send(act);
                 }
             }
         },
         EventType::KeyRelease(key) => match key {
-            Key::Alt | Key::AltGr => {
-                if let Ok(mut m) = shared.mods.lock() {
-                    m.alt = false;
-                }
-                if let Ok(mut sm) = shared.sm.lock() {
-                    if let Some(act) = sm.on_modifier_up(ModifierKind::Alt, Instant::now()) {
-                        let _ = shared.tx.send(act);
-                    }
-                }
-            }
-            Key::ControlLeft | Key::ControlRight => {
-                if let Ok(mut m) = shared.mods.lock() {
-                    m.ctrl = false;
-                }
-                if let Ok(mut sm) = shared.sm.lock() {
-                    if let Some(act) = sm.on_modifier_up(ModifierKind::Ctrl, Instant::now()) {
-                        let _ = shared.tx.send(act);
-                    }
-                }
-            }
+            Key::Alt | Key::AltGr => on_mod_up(shared, ModifierKind::Alt),
+            Key::ControlLeft | Key::ControlRight => on_mod_up(shared, ModifierKind::Ctrl),
             Key::ShiftLeft | Key::ShiftRight => {
                 if let Ok(mut m) = shared.mods.lock() {
                     m.shift = false;
@@ -149,6 +111,42 @@ fn handle_event(event: Event) {
             _ => {}
         },
         _ => {}
+    }
+}
+
+fn on_mod_down(shared: &UnixHookState, kind: ModifierKind) {
+    let others = {
+        let Ok(mut m) = shared.mods.lock() else {
+            return;
+        };
+        let already_down = match kind {
+            ModifierKind::Alt => std::mem::replace(&mut m.alt, true),
+            ModifierKind::Ctrl => std::mem::replace(&mut m.ctrl, true),
+        };
+        if already_down {
+            return;
+        }
+        match kind {
+            ModifierKind::Alt => ModifierState { alt: false, ..*m },
+            ModifierKind::Ctrl => ModifierState { ctrl: false, ..*m },
+        }
+    };
+    if let Ok(mut sm) = shared.sm.lock() {
+        sm.on_modifier_down(kind, others);
+    }
+}
+
+fn on_mod_up(shared: &UnixHookState, kind: ModifierKind) {
+    if let Ok(mut m) = shared.mods.lock() {
+        match kind {
+            ModifierKind::Alt => m.alt = false,
+            ModifierKind::Ctrl => m.ctrl = false,
+        }
+    }
+    if let Ok(mut sm) = shared.sm.lock()
+        && let Some(act) = sm.on_modifier_up(kind, Instant::now())
+    {
+        let _ = shared.tx.send(act);
     }
 }
 

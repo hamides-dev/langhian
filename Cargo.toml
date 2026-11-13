@@ -11,7 +11,6 @@ edition = "2024"
 authors = ["Hamid Eslami <hamideslami540@gmail.com>"]
 license = "MIT"
 repository = "https://github.com/hamides-dev/langhian"
-homepage = "https://github.com/hamides-dev/langhian"
 description = "Ultra-lightweight pure-Rust desktop translation daemon with multi-provider AI, free Google Translate, double-tap triggers, vision screenshot translation, and vocabulary highlighting."
 
 [profile.release]
