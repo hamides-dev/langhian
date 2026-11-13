@@ -132,6 +132,7 @@ jobs:
             libxkbcommon-dev \
             libwayland-dev \
             libpipewire-0.3-dev \
+            libgbm-dev \
             libdbus-1-dev
 
       - uses: dtolnay/rust-toolchain@stable
@@ -169,7 +170,7 @@ jobs:
             "Priority: optional" \
             "Architecture: amd64" \
             "Maintainer: Hamid Eslami <hamideslami540@gmail.com>" \
-            "Depends: libc6, libgtk-3-0, libayatana-appindicator3-1 | libappindicator3-1, libxdo3, libx11-6" \
+            "Depends: libc6, libgtk-3-0, libayatana-appindicator3-1 | libappindicator3-1, libxdo3, libx11-6, libgbm1" \
             "Description: Lightweight pure-Rust AI and Google Translate desktop translator" \
             > dist/deb/DEBIAN/control
 

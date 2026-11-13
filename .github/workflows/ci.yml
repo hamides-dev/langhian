@@ -43,6 +43,7 @@ jobs:
             libxkbcommon-dev \
             libwayland-dev \
             libpipewire-0.3-dev \
+            libgbm-dev \
             libdbus-1-dev \
             xvfb
 
