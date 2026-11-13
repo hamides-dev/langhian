@@ -2980,7 +2980,7 @@ dependencies = [
 
 [[package]]
 name = "langhian-app"
-version = "0.1.1"
+version = "0.2.0"
 dependencies = [
  "arboard",
  "chrono",
@@ -3000,7 +3000,7 @@ dependencies = [
 
 [[package]]
 name = "langhian-core"
-version = "0.1.1"
+version = "0.2.0"
 dependencies = [
  "aho-corasick",
  "base64 0.22.1",

@@ -143,6 +143,22 @@ fn is_word_char(c: char) -> bool {
     c.is_alphanumeric() || c == '_' || c == '\u{200C}'
 }
 
+pub fn find_vocab_match_index(
+    entries: &[VocabEntry],
+    term: &str,
+    translation: &str,
+) -> Option<usize> {
+    let t = term.trim();
+    let tr = translation.trim();
+    if t.is_empty() {
+        return None;
+    }
+    entries.iter().position(|e| {
+        e.term.trim().eq_ignore_ascii_case(t)
+            && (tr.is_empty() || e.translation.trim().eq_ignore_ascii_case(tr))
+    })
+}
+
 pub fn export_vocab_json(entries: &[VocabEntry]) -> Result<String, serde_json::Error> {
     serde_json::to_string_pretty(entries)
 }

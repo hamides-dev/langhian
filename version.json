@@ -1,32 +1,32 @@
 {
-  "version": "0.1.1",
-  "tag": "v0.1.1",
-  "published_at": "2026-11-13T11:30:00Z",
-  "release_url": "https://github.com/hamides-dev/langhian/releases/tag/v0.1.1",
-  "notes": "Langhian Translation v0.1.1: Fixed Windows clipboard selection capture via native virtual-key SendInput & sequence polling, enforced true single-instance lock with tray left-click deduplication, eliminated Medium-weight glyph corruption, made HUD/Modal floating surfaces cleanly transparent, and redesigned the UI in clean Antigravity style.",
+  "version": "0.2.0",
+  "tag": "v0.2.0",
+  "published_at": "2026-11-13T17:12:00Z",
+  "release_url": "https://github.com/hamides-dev/langhian/releases/tag/v0.2.0",
+  "notes": "Langhian Translation v0.2.0: Guided first-run onboarding wizard, smart bidirectional (>=70%) Native/Target routing, provider-first model discovery with live pricing & logos, Markdown-preserving capture, resizable smart-positioned modal with selectable output and auto-reset copy badges, full Persian RTL fix, Velvet Plum (#685C74) visual identity with rounded frameless chrome, and crisp titlebar controls.",
   "assets": {
     "windows_x86_64_installer": {
-      "url": "https://github.com/hamides-dev/langhian/releases/download/v0.1.1/langhian-setup-windows-x86_64.exe",
+      "url": "https://github.com/hamides-dev/langhian/releases/download/v0.2.0/langhian-setup-windows-x86_64.exe",
       "sha256": ""
     },
     "windows_x86_64_portable": {
-      "url": "https://github.com/hamides-dev/langhian/releases/download/v0.1.1/langhian-windows-x86_64.zip",
+      "url": "https://github.com/hamides-dev/langhian/releases/download/v0.2.0/langhian-windows-x86_64.zip",
       "sha256": ""
     },
     "macos_arm64_dmg": {
-      "url": "https://github.com/hamides-dev/langhian/releases/download/v0.1.1/langhian-macos-arm64.dmg",
+      "url": "https://github.com/hamides-dev/langhian/releases/download/v0.2.0/langhian-macos-arm64.dmg",
       "sha256": ""
     },
     "macos_x86_64_dmg": {
-      "url": "https://github.com/hamides-dev/langhian/releases/download/v0.1.1/langhian-macos-x86_64.dmg",
+      "url": "https://github.com/hamides-dev/langhian/releases/download/v0.2.0/langhian-macos-x86_64.dmg",
       "sha256": ""
     },
     "linux_x86_64_deb": {
-      "url": "https://github.com/hamides-dev/langhian/releases/download/v0.1.1/langhian-linux-amd64.deb",
+      "url": "https://github.com/hamides-dev/langhian/releases/download/v0.2.0/langhian-linux-amd64.deb",
       "sha256": ""
     },
     "linux_x86_64_tar": {
-      "url": "https://github.com/hamides-dev/langhian/releases/download/v0.1.1/langhian-linux-x86_64.tar.gz",
+      "url": "https://github.com/hamides-dev/langhian/releases/download/v0.2.0/langhian-linux-x86_64.tar.gz",
       "sha256": ""
     }
   }

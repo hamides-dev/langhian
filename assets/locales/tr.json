@@ -10,7 +10,10 @@
     "subtitle": "Langhian Çeviri",
     "status_ready": "Arka planda hazır",
     "status_translating": "Çevriliyor...",
-    "status_error": "Hata"
+    "status_error": "Hata",
+    "minimize": "Küçült",
+    "maximize": "Büyüt",
+    "restore": "Geri Yükle"
   },
   "tray": {
     "open": "Langhian'ı Aç",
@@ -51,7 +54,15 @@
     "pin": "Sabitle",
     "unpin": "Sabitlemeyi Kaldır",
     "close": "Kapat",
-    "regenerate": "Yeniden Oluştur"
+    "regenerate": "Yeniden Oluştur",
+    "native_lang_badge": "Ana Dil",
+    "target_lang_badge": "Hedef Dil",
+    "direction_auto_swapped": "Ana diliniz algılandı -> çeviri hedefi:",
+    "direction_standard": "Çeviri hedefi:",
+    "copy_source": "Kaynağı Kopyala",
+    "translate_retranslate": "Çevir",
+    "star_vocab": "Kelime Defterine Ekle",
+    "starred": "Yıldızlandı"
   },
   "models": {
     "title": "Yapay Zeka Modelleri ve Sağlayıcılar",
@@ -92,7 +103,16 @@
     "vision_required_title": "Aktif Model Görsel Girişini Desteklemiyor",
     "vision_required_desc": "Seçili model ekran görüntüsü/görsel çevirisini desteklemiyor. Lütfen görsel destekli bir modele (GPT-4o, Claude 3.5/4 Sonnet, Gemini 2.5 Flash, Qwen2.5-VL veya LLaVA) geçin ya da model ayarlarından Vision desteğini açın.",
     "switch_to_vision_model": "Görsel Destekli Modele Geç:",
-    "no_vision_models_hint": "Henüz görsel destekli bir profil yok. Modeller sekmesinden OpenAI/OpenRouter/Claude/Gemini veya Ollama-VL ekleyin."
+    "no_vision_models_hint": "Henüz görsel destekli bir profil yok. Modeller sekmesinden OpenAI/OpenRouter/Claude/Gemini veya Ollama-VL ekleyin.",
+    "step_provider": "1. Sağlayıcı Seçin",
+    "step_key": "2. API Anahtarı ve Uç Nokta",
+    "step_pick_model": "3. Modeller ve Fiyatlandırma",
+    "search_models_placeholder": "Model ara (örn. gpt, claude, gemini, llama)...",
+    "price_free": "Ücretsiz",
+    "price_local": "Yerel ($0)",
+    "no_models_fetched": "Kullanılabilir modelleri ve fiyatları görmek için API anahtarınızı girip Modelleri Getir'e tıklayın.",
+    "use_selected_model": "Seç ve Kaydet",
+    "pricing_in_out": "1M token başı Giriş / Çıkış"
   },
   "prompts": {
     "title": "İstem (Prompt) Şablonları",
@@ -123,7 +143,9 @@
     "delete": "Sil",
     "edit": "Düzenle",
     "save": "Kaydet",
-    "count_label": "Kayıtlı öğe"
+    "count_label": "Kayıtlı öğe",
+    "notes_placeholder": "Bağlam, örnek cümle veya dilbilgisi notu ekleyin...",
+    "starred_badge": "Yıldızlı"
   },
   "history": {
     "title": "Çeviri Geçmişi",
@@ -138,10 +160,29 @@
   },
   "settings": {
     "title": "Ayarlar ve Kısayollar",
+    "tab_general": "Genel",
+    "tab_shortcuts": "Kısayollar",
+    "tab_translation": "Çeviri",
+    "tab_appearance": "Görünüm",
+    "tab_updates": "Güncellemeler",
     "language_label": "Arayüz Dili",
+    "native_language": "Ana Diliniz",
+    "native_language_desc": "Yabancı metinler Çift Ctrl veya Manuel modda otomatik olarak bu dile çevrilir.",
+    "target_language": "Hedef Dil (Yazma / Pratik)",
+    "target_language_desc": "Herhangi bir kutudaki Çift Alt her zaman bu dile çevirir. Giriş >= %70 ana dilinizdeyse pencere de otomatik buraya yönlenir.",
+    "preserve_markdown": "Markdown ve Başlık Yapısını Koru",
+    "preserve_markdown_desc": "Tarayıcılardan kopyalarken H1–H3 başlıklarını, listeleri ve kod bloklarını koruyarak aynı hiyerarşide gösterir.",
+    "reset_modal_pos": "Kayan Pencere Konumunu Sıfırla",
+    "reset_modal_pos_desc": "Kaydedilen konumu temizler; pencere tekrar imlecinizin yanında açılır.",
+    "reset_modal_pos_btn": "Konumu Sıfırla",
+    "rerun_onboarding": "Hızlı Kurulum Sihirbazı",
+    "rerun_onboarding_desc": "Dilleri ayarlamak ve temel kısayolları görmek için ilk kurulum rehberini yeniden açın.",
+    "rerun_onboarding_btn": "Rehberi Aç",
+    "auto_save_hint": "Tüm değişiklikler anında otomatik olarak kaydedilir.",
+    "hotkey_syntax_hint": "Biçim: Ctrl+Shift+X, Alt+Space, Ctrl+Alt+Left (Değiştiriciler: Ctrl, Alt, Shift, Super)",
     "theme_label": "Görünüm Teması",
-    "theme_dark": "Antigravity Koyu",
-    "theme_light": "Antigravity Açık",
+    "theme_dark": "Gece Koyu (Midnight)",
+    "theme_light": "Gündüz Açık (Daylight)",
     "shortcuts_section": "Genel Kısayollar ve Çift Dokunma",
     "enable_double_alt": "Çift Alt: Giriş Alanında Çevir ve Değiştir",
     "double_alt_desc": "Herhangi bir metin kutusunda Alt tuşuna arka arkaya iki kez basarak seçili metni anında çevirip değiştirin.",
@@ -207,5 +248,27 @@
     "launch_startup_desc": "Oturum açılışında sistem tepsisinde sessizce küçültülmüş başlat.",
     "show_hud_desc": "İstem değiştirirken veya metin yerleştirirken kompakt yüzen durum hapını göster.",
     "auto_update_desc": "Langhian başlatıldığında GitHub sürümlerini otomatik denetle."
+  },
+  "onboarding": {
+    "title": "Langhian'a Hoş Geldiniz",
+    "subtitle": "Saf Rust ile ultra hafif masaüstü çevirmeni. 20 saniyede dillerinizi ayarlayın.",
+    "step1_title": "Langhian Her Yerde Nasıl Çalışır",
+    "cap_alt_title": "Çift Alt -> Giriş Kutusunda Değiştir",
+    "cap_alt_desc": "Herhangi bir sohbet veya arama kutusuna yazın, iki kez Alt'a basın; metniniz yerinde hedef dile dönüşsün.",
+    "cap_ctrl_title": "Çift Ctrl -> Kayan Çeviri Penceresi",
+    "cap_ctrl_desc": "Tarayıcılarda veya belgelerde bir cümle seçip iki kez Ctrl'e basın; imlecin hemen altında çevirin ve yıldızlayın.",
+    "cap_snip_title": "Ekran Görüntüsü + Markdown",
+    "cap_snip_desc": "Seçilemeyen metinleri Vision AI ile çevirin; web sayfası başlıklarını ve listelerini temiz tutun.",
+    "step2_title": "Ana Dil ve Hedef Dil Ayrımı",
+    "native_explain": "En iyi anladığınız dil. Çift Ctrl ve Manuel çeviriler bu dile çıkar (girişiniz >= %70 ana dilinizde değilse).",
+    "target_explain": "Yazdığınız veya pratik yaptığınız dil. Giriş kutularındaki Çift Alt DAİMA bu hedef dile çevirir.",
+    "preview_title": "Akıllı Yönlendirme Önizlemesi",
+    "step3_title": "Başlamaya Hazır",
+    "step3_desc": "Ücretsiz Google Çeviri API anahtarı olmadan hemen çalışır. OpenRouter, OpenAI, Claude, Gemini veya Ollama modellerini Modeller sekmesinden istediğiniz zaman ekleyebilirsiniz.",
+    "next_btn": "Devam Et",
+    "back_btn": "Geri",
+    "finish_btn": "Langhian'ı Başlat",
+    "open_models_btn": "Sağlayıcı Ekle",
+    "skip_btn": "Atla"
   }
 }

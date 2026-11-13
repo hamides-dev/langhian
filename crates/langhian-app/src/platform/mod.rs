@@ -7,6 +7,7 @@ pub mod input_unix;
 pub mod input_win;
 pub mod tray;
 pub mod updater_exec;
+pub mod window_pos;
 
 #[cfg(not(target_os = "windows"))]
 pub use input_unix::{current_cursor_pos, refresh_shortcut_config, start_keyboard_listener};

@@ -350,12 +350,85 @@ impl Default for ShortcutConfig {
     }
 }
 
+#[derive(Debug, Clone, PartialEq)]
+pub struct ModelCatalogEntry {
+    pub id: String,
+    pub display_name: String,
+    pub prompt_price_per_m: Option<f64>,
+    pub completion_price_per_m: Option<f64>,
+    pub is_free: bool,
+    pub is_local: bool,
+    pub supports_vision: Option<bool>,
+    pub context_length: Option<u32>,
+}
+
+impl ModelCatalogEntry {
+    pub fn format_price_badge(&self) -> String {
+        if self.is_local {
+            return "Local · Free".to_string();
+        }
+        if self.is_free {
+            return "Free".to_string();
+        }
+        match (self.prompt_price_per_m, self.completion_price_per_m) {
+            (Some(p_in), Some(p_out)) if p_in == 0.0 && p_out == 0.0 => "Free".to_string(),
+            (Some(p_in), Some(p_out)) => {
+                format!("{} in · {} out / 1M", format_usd(p_in), format_usd(p_out))
+            }
+            (Some(p_in), None) => format!("{} in / 1M", format_usd(p_in)),
+            _ => "API Rate".to_string(),
+        }
+    }
+
+    pub fn format_context_badge(&self) -> Option<String> {
+        self.context_length.map(|ctx| {
+            if ctx >= 1_000_000 {
+                format!("{}M ctx", ctx / 1_000_000)
+            } else if ctx >= 1_000 {
+                format!("{}K ctx", ctx / 1_000)
+            } else {
+                format!("{ctx} ctx")
+            }
+        })
+    }
+}
+
+fn format_usd(val: f64) -> String {
+    if val < 0.01 && val > 0.0 {
+        format!("${val:.4}")
+    } else if val < 0.10 {
+        format!("${val:.3}")
+    } else {
+        format!("${val:.2}")
+    }
+}
+
+fn default_native_language() -> String {
+    "en".to_string()
+}
+
+fn default_true() -> bool {
+    true
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
 pub struct AppConfig {
     pub ui_language: String,
     pub theme: UiThemeMode,
+    #[serde(default)]
+    pub onboarding_completed: bool,
+    #[serde(default = "default_native_language")]
+    pub native_language: String,
     pub source_language: String,
     pub target_language: String,
+    #[serde(default = "default_true")]
+    pub preserve_markdown: bool,
+    #[serde(default)]
+    pub modal_position: Option<[f32; 2]>,
+    #[serde(default)]
+    pub modal_size: Option<[f32; 2]>,
+    #[serde(default)]
+    pub modal_pinned: bool,
     pub active_model_id: String,
     pub active_prompt_id: String,
     pub models: Vec<ModelProfile>,
@@ -376,8 +449,14 @@ impl Default for AppConfig {
         Self {
             ui_language: "en".to_string(),
             theme: UiThemeMode::Dark,
+            onboarding_completed: false,
+            native_language: "en".to_string(),
             source_language: "auto".to_string(),
             target_language: "fa".to_string(),
+            preserve_markdown: true,
+            modal_position: None,
+            modal_size: None,
+            modal_pinned: false,
             active_model_id: default_model.id.clone(),
             active_prompt_id,
             models: vec![default_model],
@@ -420,6 +499,16 @@ impl AppConfig {
             self.active_prompt_id = self.prompts[0].id.clone();
         }
         self.shortcuts.double_tap_ms = self.shortcuts.double_tap_ms.clamp(160, 800);
+        if self.native_language.trim().is_empty() || self.native_language == "auto" {
+            self.native_language = "en".to_string();
+        }
+        if self.target_language.trim().is_empty() || self.target_language == "auto" {
+            self.target_language = if self.native_language == "en" {
+                "fa".to_string()
+            } else {
+                "en".to_string()
+            };
+        }
     }
 }
 
@@ -557,4 +646,27 @@ pub fn language_display_name(code: &str) -> &str {
         .find(|l| l.code.eq_ignore_ascii_case(code))
         .map(|l| l.name)
         .unwrap_or(code)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn legacy_config_deserializes_with_sensible_defaults() {
+        let base = serde_json::to_value(AppConfig::default()).unwrap();
+        let mut obj = base.as_object().unwrap().clone();
+        obj.remove("onboarding_completed");
+        obj.remove("native_language");
+        obj.remove("preserve_markdown");
+        obj.remove("modal_position");
+        obj.remove("modal_pinned");
+        let parsed: AppConfig =
+            serde_json::from_value(serde_json::Value::Object(obj)).expect("deserializes legacy");
+        assert!(!parsed.onboarding_completed);
+        assert_eq!(parsed.native_language, "en");
+        assert!(parsed.preserve_markdown);
+        assert!(parsed.modal_position.is_none());
+        assert!(!parsed.modal_pinned);
+    }
 }

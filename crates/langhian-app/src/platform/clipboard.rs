@@ -237,6 +237,7 @@ fn poll_clipboard_non_empty(clipboard: &mut Clipboard, attempts: usize) -> Optio
 pub fn capture_selection(
     restore_clipboard_immediately: bool,
     allow_select_all_fallback: bool,
+    prefer_markdown: bool,
 ) -> Result<CapturedSelection, String> {
     let _guard = SyntheticGuard::enter();
     let mut clipboard = Clipboard::new().map_err(|e| format!("Clipboard error: {e}"))?;
@@ -278,6 +279,15 @@ pub fn capture_selection(
             first
         }
     };
+
+    if prefer_markdown
+        && let Some(ref plain) = captured
+        && !langhian_core::contains_markdown_structure(plain)
+        && let Ok(html) = clipboard.get().html()
+        && let Some(md) = langhian_core::html_fragment_to_markdown(&html)
+    {
+        captured = Some(md);
+    }
 
     if restore_clipboard_immediately || captured.is_none() {
         restore_prev(&mut clipboard, &previous);

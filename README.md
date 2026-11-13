@@ -1,30 +1,32 @@
 # Langhian Translation
 
-**Langhian** is an ultra-lightweight, pure-Rust native desktop translation daemon built with zero WebView overhead (`iced` + `wgpu`/`tiny-skia`), featuring an Antigravity-inspired minimalist interface, global double-tap workflows, multi-provider AI routing, free Google Translate support, vision-gated screenshot translation, and saved vocabulary highlighting.
+**Langhian** is an ultra-lightweight, pure-Rust native desktop translation daemon built with zero WebView overhead (`iced` + `wgpu`/`tiny-skia`), featuring a clean frameless **Midnight Dark / Daylight Light** Velvet Plum interface, global double-tap workflows, multi-provider AI routing with live per-1M pricing discovery, free Google Translate support, vision-gated screenshot translation, and saved vocabulary highlighting.
 
 ---
 
 ## Highlights
 
 - **Zero WebView / Ultra-Lightweight**: Built 100% in native Rust (`iced 0.14` daemon). Background tray mode closes inactive surfaces so idle memory and CPU usage stay minimal.
-- **Any AI Provider + Free Google Translate**:
+- **First-Run Quick Setup Wizard**: Guides new users through interface language/RTL orientation, core shortcuts, and **Native Language vs. Target Language** routing (re-accessible anytime from Settings).
+- **Smart Bidirectional Language Routing**: Translates foreign text into your **Native Language**, automatically detects when you type in your Native Language inside the modal/dashboard (`>= 70%` threshold) to reverse into your **Target Language**, and always locks **Double-Tap `Alt`** in-place replacement strictly toward your Target Language.
+- **Provider-First Model Setup & Free Google Translate**:
   - **Google Translate (Free)** out of the box (no API key needed)
-  - **OpenAI**, **OpenRouter**, **Anthropic Claude**, **Google Gemini**
+  - **OpenRouter**, **OpenAI**, **Anthropic Claude**, **Google Gemini**
   - **Local LLMs**: **Ollama** (`localhost:11434/v1`), **LM Studio** (`localhost:1234/v1`), or **any custom OpenAI-compatible endpoint**
-  - API keys stored safely in the OS Credential Store (`Windows Credential Manager` / `macOS Keychain` / `Linux Secret Service`).
+  - Searchable provider catalogs displaying per-1M input/output pricing, context length, and vision capability badges; API keys stored safely in the OS Credential Store (`Windows Credential Manager` / `macOS Keychain` / `Linux Secret Service`).
 - **Global Double-Tap Workflows**:
   - **Double-Tap `Alt`** — Translate selected text in any input field and replace it in place (with optional auto-`Ctrl+A` fallback and clipboard restoration).
-  - **Double-Tap `Ctrl`** — Translate selected text and display it inside an `AlwaysOnTop` floating modal.
+  - **Double-Tap `Ctrl`** — Open a focused floating translation modal anchored right near your selection (or centered if out of bounds; remembers dragged screen coordinates). Click outside to dismiss or pin with one click.
   - **Screenshot Region Translation** (`Ctrl+Shift+X`) — Freeze-frame region snipping with vision-capability enforcement (explains clearly and offers 1-click model switch if the active model is text-only).
+- **Markdown-Aware Translation & Vocabulary Star Highlighting**:
+  - Preserves headings, bullet/numbered lists, blockquotes, and code spans when copying rich web/document selections, and lets you star/unstar translations directly into your searchable Vocabulary book with clickable inline highlights.
 - **Custom Prompts & Instant Shortcut Switching**:
   - Define unlimited custom prompts (`{text}`, `{source_lang}`, `{target_lang}`) with direct quick-switch slots (`Ctrl+Alt+1..9`) and cycle hotkeys (`Ctrl+Alt+Left` / `Ctrl+Alt+Right`).
-- **Vocabulary Saving & Highlighting**:
-  - Save words or sentences from translations; future translations automatically highlight matching vocabulary with clickable inline previews.
-- **First-Class RTL & Multi-Language UI**:
-  - Bundled `Inter` and `Vazirmatn` fonts with Unicode BiDi + HarfRust complex shaping for crisp Persian/Arabic translations.
-  - Multi-language UI powered by JSON locale files: **English (`en`)**, **Persian (`fa`, RTL)**, and **Turkish (`tr`)**.
-- **In-App Updates & Native Installers**:
-  - Checks `version.json` / GitHub Releases directly from Settings and downloads/launches platform installers.
+- **Crisp Bundled Typography & Vector Iconography**:
+  - Bundled `Inter` and `Vazirmatn` fonts with Unicode BiDi + HarfRust shaping and automatic RTL UI flipping (**English `en`**, **Persian `fa` RTL**, **Turkish `tr`**).
+  - Custom Velvet Plum (`#685C74`) application icon paired with bundled **Material Symbols Rounded** UI icons and **LobeHub** provider brand SVGs (see [CONTRIBUTING.md](CONTRIBUTING.md)).
+- **Instant Auto-Save Settings & In-App Updates**:
+  - Clean sub-tabbed Settings where changes apply and save automatically, plus `version.json` / GitHub Releases update checking and installer launch.
 
 ---
 

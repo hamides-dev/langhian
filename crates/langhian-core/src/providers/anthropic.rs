@@ -2,7 +2,7 @@ use super::{
     ProviderError, TranslateInput, TranslateRequest, TranslateResponse, build_text_prompts,
     build_vision_prompts, looks_like_vision_rejection,
 };
-use crate::models::ModelProfile;
+use crate::models::{ModelCatalogEntry, ModelProfile};
 use base64::Engine;
 use reqwest::Client;
 use serde_json::{Value, json};
@@ -133,6 +133,98 @@ pub async fn translate(
         translated_text: text,
         detected_source_lang: None,
     })
+}
+
+fn list_models_url(base_url: &str) -> String {
+    let trimmed = base_url.trim().trim_end_matches('/');
+    if trimmed.ends_with("/models") {
+        trimmed.to_string()
+    } else if trimmed.ends_with("/v1") {
+        format!("{trimmed}/models")
+    } else {
+        format!("{trimmed}/v1/models")
+    }
+}
+
+pub async fn fetch_models_detailed(
+    http: &Client,
+    profile: &ModelProfile,
+    api_key: Option<&str>,
+) -> Result<Vec<ModelCatalogEntry>, ProviderError> {
+    let key = api_key
+        .map(str::trim)
+        .filter(|k| !k.is_empty())
+        .ok_or_else(|| ProviderError::MissingApiKey {
+            model_name: profile.name.clone(),
+        })?;
+
+    let resp = http
+        .get(list_models_url(&profile.base_url))
+        .header("x-api-key", key)
+        .header("anthropic-version", "2023-06-01")
+        .send()
+        .await
+        .map_err(|e| ProviderError::Network(e.to_string()))?;
+
+    let status = resp.status().as_u16();
+    let raw = resp.text().await.unwrap_or_default();
+    if !(200..300).contains(&status) {
+        return Err(ProviderError::ApiError {
+            status,
+            message: extract_error(&raw),
+        });
+    }
+
+    let json: Value =
+        serde_json::from_str(&raw).map_err(|e| ProviderError::InvalidResponse(e.to_string()))?;
+    let mut entries = Vec::new();
+    if let Some(arr) = json.get("data").and_then(|v| v.as_array()) {
+        for item in arr {
+            let Some(id) = item.get("id").and_then(|v| v.as_str()) else {
+                continue;
+            };
+            let display_name = item
+                .get("display_name")
+                .and_then(|v| v.as_str())
+                .unwrap_or(id)
+                .to_string();
+            let (p_in, p_out) = anthropic_reference_pricing(id);
+            entries.push(ModelCatalogEntry {
+                id: id.to_string(),
+                display_name,
+                prompt_price_per_m: p_in,
+                completion_price_per_m: p_out,
+                is_free: false,
+                is_local: false,
+                supports_vision: Some(super::infer_vision_capability(
+                    crate::models::ProviderKind::Anthropic,
+                    id,
+                )),
+                context_length: Some(200_000),
+            });
+        }
+    }
+    Ok(entries)
+}
+
+fn anthropic_reference_pricing(model_id: &str) -> (Option<f64>, Option<f64>) {
+    let m = model_id.to_ascii_lowercase();
+    if m.contains("opus-4") || m.contains("claude-3-opus") {
+        (Some(15.0), Some(75.0))
+    } else if m.contains("sonnet-4")
+        || m.contains("claude-3-7-sonnet")
+        || m.contains("claude-3-5-sonnet")
+    {
+        (Some(3.0), Some(15.0))
+    } else if m.contains("haiku-3-5") || m.contains("3-5-haiku") {
+        (Some(0.80), Some(4.0))
+    } else if m.contains("haiku-4") || m.contains("4-5-haiku") {
+        (Some(1.0), Some(5.0))
+    } else if m.contains("haiku") {
+        (Some(0.25), Some(1.25))
+    } else {
+        (None, None)
+    }
 }
 
 pub async fn ping(

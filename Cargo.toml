@@ -6,12 +6,15 @@ members = [
 ]
 
 [workspace.package]
-version = "0.1.1"
+version = "0.2.0"
 edition = "2024"
 authors = ["Hamid Eslami <hamideslami540@gmail.com>"]
 license = "MIT"
 repository = "https://github.com/hamides-dev/langhian"
 description = "Ultra-lightweight pure-Rust desktop translation daemon with multi-provider AI, free Google Translate, double-tap triggers, vision screenshot translation, and vocabulary highlighting."
+
+[profile.dev]
+debug = "line-tables-only"
 
 [profile.release]
 opt-level = "s"

@@ -1,4 +1,4 @@
-use crate::ui::theme::APP_ICON_PNG;
+use crate::ui::icons::APP_LOGO_PNG as APP_ICON_PNG;
 use langhian_core::{AppConfig, Translator};
 use std::collections::HashMap;
 use std::sync::{Arc, Mutex};

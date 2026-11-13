@@ -2,7 +2,7 @@ use super::{
     ModelCapabilityProbe, ProviderError, TranslateInput, TranslateRequest, TranslateResponse,
     build_text_prompts, build_vision_prompts, infer_vision_capability, looks_like_vision_rejection,
 };
-use crate::models::{ModelProfile, ProviderKind};
+use crate::models::{ModelCatalogEntry, ModelProfile, ProviderKind};
 use base64::Engine;
 use reqwest::{Client, RequestBuilder};
 use serde_json::{Value, json};
@@ -145,11 +145,11 @@ pub fn parse_openai_response(json: &Value) -> Result<TranslateResponse, Provider
     })
 }
 
-pub async fn fetch_models(
+pub async fn fetch_models_detailed(
     http: &Client,
     profile: &ModelProfile,
     api_key: Option<&str>,
-) -> Result<Vec<String>, ProviderError> {
+) -> Result<Vec<ModelCatalogEntry>, ProviderError> {
     let url = models_url(&profile.base_url);
     let builder = apply_auth_and_headers(http.get(&url), profile, api_key);
     let resp = builder
@@ -168,16 +168,148 @@ pub async fn fetch_models(
 
     let json: Value =
         serde_json::from_str(&raw).map_err(|e| ProviderError::InvalidResponse(e.to_string()))?;
-    let mut ids = Vec::new();
+    Ok(parse_models_catalog(&profile.base_url, &json))
+}
+
+pub fn parse_models_catalog(base_url: &str, json: &Value) -> Vec<ModelCatalogEntry> {
+    let base_lower = base_url.to_ascii_lowercase();
+    let is_local = base_lower.contains("localhost") || base_lower.contains("127.0.0.1");
+    let is_openai_official = base_lower.contains("api.openai.com");
+    let mut entries = Vec::new();
+
     if let Some(arr) = json.get("data").and_then(|v| v.as_array()) {
         for item in arr {
-            if let Some(id) = item.get("id").and_then(|v| v.as_str()) {
-                ids.push(id.to_string());
+            let Some(id) = item.get("id").and_then(|v| v.as_str()) else {
+                continue;
+            };
+            if is_openai_official && !is_openai_chat_model(id) {
+                continue;
             }
+
+            let display_name = item
+                .get("name")
+                .and_then(|v| v.as_str())
+                .unwrap_or(id)
+                .to_string();
+
+            let context_length = item
+                .get("context_length")
+                .and_then(|v| v.as_u64())
+                .and_then(|n| u32::try_from(n).ok());
+
+            let vision_from_modalities = item
+                .pointer("/architecture/input_modalities")
+                .and_then(|v| v.as_array())
+                .map(|mods| mods.iter().any(|m| m.as_str() == Some("image")));
+            let supports_vision =
+                Some(vision_from_modalities.unwrap_or_else(|| {
+                    infer_vision_capability(ProviderKind::OpenAiCompatible, id)
+                }));
+
+            let prompt_price_raw = parse_price_per_token(item.pointer("/pricing/prompt"));
+            let completion_price_raw = parse_price_per_token(item.pointer("/pricing/completion"));
+
+            let (prompt_price_per_m, completion_price_per_m) =
+                match (prompt_price_raw, completion_price_raw) {
+                    (Some(pi), Some(po)) => (Some(pi * 1_000_000.0), Some(po * 1_000_000.0)),
+                    (Some(pi), None) => (Some(pi * 1_000_000.0), None),
+                    _ if is_openai_official => openai_reference_pricing(id),
+                    _ => (None, None),
+                };
+
+            let is_free = is_local
+                || id.ends_with(":free")
+                || (prompt_price_per_m == Some(0.0) && completion_price_per_m == Some(0.0));
+
+            entries.push(ModelCatalogEntry {
+                id: id.to_string(),
+                display_name,
+                prompt_price_per_m,
+                completion_price_per_m,
+                is_free,
+                is_local,
+                supports_vision,
+                context_length,
+            });
         }
     }
-    ids.sort();
-    Ok(ids)
+
+    entries.sort_by(|a, b| a.id.cmp(&b.id));
+    entries
+}
+
+fn parse_price_per_token(val: Option<&Value>) -> Option<f64> {
+    let v = val?;
+    let parsed = if let Some(n) = v.as_f64() {
+        Some(n)
+    } else if let Some(s) = v.as_str() {
+        s.trim().parse::<f64>().ok()
+    } else {
+        None
+    }?;
+    if parsed.is_finite() && parsed >= 0.0 {
+        Some(parsed)
+    } else {
+        None
+    }
+}
+
+fn is_openai_chat_model(id: &str) -> bool {
+    let lower = id.to_ascii_lowercase();
+    if lower.contains("embedding")
+        || lower.contains("tts")
+        || lower.contains("whisper")
+        || lower.contains("dall-e")
+        || lower.contains("moderation")
+        || lower.contains("realtime")
+        || lower.contains("transcribe")
+        || lower.contains("audio")
+        || lower.contains("image-")
+        || lower.contains("sora")
+    {
+        return false;
+    }
+    lower.starts_with("gpt-")
+        || lower.starts_with("o1")
+        || lower.starts_with("o3")
+        || lower.starts_with("o4")
+        || lower.starts_with("chatgpt-")
+}
+
+fn openai_reference_pricing(id: &str) -> (Option<f64>, Option<f64>) {
+    let m = id.to_ascii_lowercase();
+    if m.starts_with("gpt-4o-mini") {
+        (Some(0.15), Some(0.60))
+    } else if m.starts_with("gpt-4o") {
+        (Some(2.50), Some(10.0))
+    } else if m.starts_with("gpt-4.1-nano") {
+        (Some(0.10), Some(0.40))
+    } else if m.starts_with("gpt-4.1-mini") {
+        (Some(0.40), Some(1.60))
+    } else if m.starts_with("gpt-4.1") {
+        (Some(2.00), Some(8.00))
+    } else if m.starts_with("o4-mini") || m.starts_with("o3-mini") {
+        (Some(1.10), Some(4.40))
+    } else if m.starts_with("o3") {
+        (Some(2.00), Some(8.00))
+    } else if m.starts_with("gpt-5-nano") {
+        (Some(0.05), Some(0.40))
+    } else if m.starts_with("gpt-5-mini") {
+        (Some(0.25), Some(2.00))
+    } else if m.starts_with("gpt-5") {
+        (Some(1.25), Some(10.00))
+    } else {
+        (None, None)
+    }
+}
+
+pub async fn fetch_models(
+    http: &Client,
+    profile: &ModelProfile,
+    api_key: Option<&str>,
+) -> Result<Vec<String>, ProviderError> {
+    let entries = fetch_models_detailed(http, profile, api_key).await?;
+    Ok(entries.into_iter().map(|e| e.id).collect())
 }
 
 pub async fn probe_capabilities(
@@ -319,5 +451,34 @@ mod tests {
         });
         let res = parse_openai_response(&payload).expect("valid response");
         assert_eq!(res.translated_text, "ترجمه تست");
+    }
+
+    #[test]
+    fn parses_openrouter_models_with_pricing_and_modalities() {
+        let payload = json!({
+            "data": [
+                {
+                    "id": "google/gemini-2.5-flash",
+                    "name": "Gemini 2.5 Flash",
+                    "context_length": 1000000,
+                    "architecture": { "input_modalities": ["text", "image"] },
+                    "pricing": { "prompt": "0.00000015", "completion": "0.00000060" }
+                },
+                {
+                    "id": "meta-llama/llama-3.3-70b:free",
+                    "name": "Llama 3.3 70B Free",
+                    "context_length": 131072,
+                    "architecture": { "input_modalities": ["text"] },
+                    "pricing": { "prompt": "0", "completion": "0" }
+                }
+            ]
+        });
+        let list = parse_models_catalog("https://openrouter.ai/api/v1", &payload);
+        assert_eq!(list.len(), 2);
+        let flash = &list[0];
+        assert_eq!(flash.id, "google/gemini-2.5-flash");
+        assert_eq!(flash.supports_vision, Some(true));
+        assert_eq!(flash.format_price_badge(), "$0.15 in · $0.60 out / 1M");
+        assert_eq!(list[1].format_price_badge(), "Free");
     }
 }

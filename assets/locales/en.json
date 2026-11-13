@@ -10,7 +10,10 @@
     "subtitle": "Langhian Translation",
     "status_ready": "Ready in background",
     "status_translating": "Translating...",
-    "status_error": "Error"
+    "status_error": "Error",
+    "minimize": "Minimize",
+    "maximize": "Maximize",
+    "restore": "Restore"
   },
   "tray": {
     "open": "Open Langhian",
@@ -51,7 +54,15 @@
     "pin": "Pin",
     "unpin": "Unpin",
     "close": "Close",
-    "regenerate": "Regenerate"
+    "regenerate": "Regenerate",
+    "native_lang_badge": "Native",
+    "target_lang_badge": "Target",
+    "direction_auto_swapped": "Native input detected -> translating to",
+    "direction_standard": "Translating into",
+    "copy_source": "Copy Source",
+    "translate_retranslate": "Translate",
+    "star_vocab": "Star to Vocabulary",
+    "starred": "Starred"
   },
   "models": {
     "title": "AI Models & Providers",
@@ -92,7 +103,16 @@
     "vision_required_title": "Image Input Not Supported by Active Model",
     "vision_required_desc": "The currently active model does not support screenshot/image input. Switch to a vision-capable model (such as GPT-4o, Claude 3.5/4 Sonnet, Gemini 2.5 Flash, Qwen2.5-VL, or LLaVA) or enable Vision support in model settings if your custom endpoint accepts images.",
     "switch_to_vision_model": "Switch to Vision Model:",
-    "no_vision_models_hint": "No vision-capable profile is configured yet. Add an OpenAI/OpenRouter/Claude/Gemini/Ollama-VL profile in Models."
+    "no_vision_models_hint": "No vision-capable profile is configured yet. Add an OpenAI/OpenRouter/Claude/Gemini/Ollama-VL profile in Models.",
+    "step_provider": "1. Choose Provider",
+    "step_key": "2. API Key & Endpoint",
+    "step_pick_model": "3. Available Models & Pricing",
+    "search_models_placeholder": "Filter models (e.g. gpt, claude, gemini, llama)...",
+    "price_free": "Free",
+    "price_local": "Local ($0)",
+    "no_models_fetched": "Enter your API key (optional for local servers) and click Fetch Models to list available models & prices.",
+    "use_selected_model": "Use Selected & Save",
+    "pricing_in_out": "In / Out per 1M tokens"
   },
   "prompts": {
     "title": "Prompt Presets",
@@ -123,7 +143,9 @@
     "delete": "Delete",
     "edit": "Edit",
     "save": "Save",
-    "count_label": "Saved items"
+    "count_label": "Saved items",
+    "notes_placeholder": "Add context, usage examples, or grammar notes...",
+    "starred_badge": "Starred"
   },
   "history": {
     "title": "Translation History",
@@ -138,10 +160,29 @@
   },
   "settings": {
     "title": "Settings & Shortcuts",
+    "tab_general": "General",
+    "tab_shortcuts": "Shortcuts",
+    "tab_translation": "Translation",
+    "tab_appearance": "Appearance",
+    "tab_updates": "Updates",
     "language_label": "Interface Language",
+    "native_language": "Your Native Language",
+    "native_language_desc": "Foreign text translated via Double-Ctrl or Manual mode translates into this language automatically.",
+    "target_language": "Target Language (Writing / Practice)",
+    "target_language_desc": "Double-Alt in any input always converts toward this language. Modal/Manual also routes here if >= 70% of input is in your native language.",
+    "preserve_markdown": "Preserve Markdown & Heading Structure",
+    "preserve_markdown_desc": "Detect H1–H3 headings, lists, and code blocks when copying from browsers and keep their visual layout.",
+    "reset_modal_pos": "Reset Floating Modal Position",
+    "reset_modal_pos_desc": "Clear saved drag coordinates so Quick Modal opens next to your cursor again.",
+    "reset_modal_pos_btn": "Reset Position",
+    "rerun_onboarding": "Quick Setup Wizard",
+    "rerun_onboarding_desc": "Open the interactive intro again to configure languages and review core shortcuts.",
+    "rerun_onboarding_btn": "Open Guide",
+    "auto_save_hint": "All changes apply and save automatically.",
+    "hotkey_syntax_hint": "Syntax: Ctrl+Shift+X, Alt+Space, Ctrl+Alt+Left (Modifiers: Ctrl, Alt, Shift, Super)",
     "theme_label": "Appearance Theme",
-    "theme_dark": "Antigravity Dark",
-    "theme_light": "Antigravity Light",
+    "theme_dark": "Midnight Dark",
+    "theme_light": "Daylight Light",
     "shortcuts_section": "Global Hotkeys & Double-Tap Triggers",
     "enable_double_alt": "Double-Tap Alt: Translate & Replace in Input",
     "double_alt_desc": "Press Alt twice rapidly to translate selected text in any input box and replace it immediately.",
@@ -207,5 +248,27 @@
     "launch_startup_desc": "Start minimized silently to the system tray on login.",
     "show_hud_desc": "Display compact floating pill status when switching prompts or replacing text.",
     "auto_update_desc": "Check GitHub releases automatically when Langhian launches."
+  },
+  "onboarding": {
+    "title": "Welcome to Langhian",
+    "subtitle": "Ultra-lightweight pure-Rust desktop translator. Set up your languages in 20 seconds.",
+    "step1_title": "Three Ways Langhian Works Everywhere",
+    "cap_alt_title": "Double-Tap Alt -> Replace in Input",
+    "cap_alt_desc": "Type in any chat, search bar, or editor, tap Alt twice, and your text turns into natural target-language prose right in place.",
+    "cap_ctrl_title": "Double-Tap Ctrl -> Floating Modal",
+    "cap_ctrl_desc": "Select any sentence in browsers, PDFs, or apps and tap Ctrl twice to inspect it in a sleek popup and star words to Vocabulary.",
+    "cap_snip_title": "Screenshot Capture + Markdown",
+    "cap_snip_desc": "Translate text inside images with Vision AI models, and keep webpage headings and lists formatted cleanly.",
+    "step2_title": "Native vs Target Language",
+    "native_explain": "The language you understand best. Double-Ctrl and Manual translations output into your Native Language (unless >= 70% of your input is already native).",
+    "target_explain": "The language you write or learn. Double-Alt in input boxes ALWAYS converts toward your Target Language so messages are never flipped backwards.",
+    "preview_title": "Smart Routing Preview",
+    "step3_title": "Ready to Start",
+    "step3_desc": "Free Google Translate works immediately with no API key. You can also connect OpenRouter, OpenAI, Claude, Gemini, or Ollama anytime in Models.",
+    "next_btn": "Continue",
+    "back_btn": "Back",
+    "finish_btn": "Start Using Langhian",
+    "open_models_btn": "Add AI Provider",
+    "skip_btn": "Skip"
   }
 }

@@ -2,7 +2,7 @@ use super::{
     ProviderError, TranslateInput, TranslateRequest, TranslateResponse, build_text_prompts,
     build_vision_prompts, looks_like_vision_rejection,
 };
-use crate::models::ModelProfile;
+use crate::models::{ModelCatalogEntry, ModelProfile};
 use base64::Engine;
 use reqwest::Client;
 use serde_json::{Value, json};
@@ -138,11 +138,11 @@ pub async fn translate(
     })
 }
 
-pub async fn fetch_models(
+pub async fn fetch_models_detailed(
     http: &Client,
     profile: &ModelProfile,
     api_key: Option<&str>,
-) -> Result<Vec<String>, ProviderError> {
+) -> Result<Vec<ModelCatalogEntry>, ProviderError> {
     let key = api_key
         .map(str::trim)
         .filter(|k| !k.is_empty())
@@ -167,15 +167,81 @@ pub async fn fetch_models(
 
     let json: Value =
         serde_json::from_str(&raw).map_err(|e| ProviderError::InvalidResponse(e.to_string()))?;
-    let mut ids = Vec::new();
+    let mut entries = Vec::new();
     if let Some(arr) = json.get("models").and_then(|v| v.as_array()) {
         for m in arr {
-            if let Some(name) = m.get("name").and_then(|v| v.as_str()) {
-                ids.push(name.trim_start_matches("models/").to_string());
+            let Some(name) = m.get("name").and_then(|v| v.as_str()) else {
+                continue;
+            };
+            let id = name.trim_start_matches("models/");
+            if !id.starts_with("gemini-") {
+                continue;
             }
+            let supports_generate = m
+                .get("supportedGenerationMethods")
+                .and_then(|v| v.as_array())
+                .is_none_or(|methods| {
+                    methods
+                        .iter()
+                        .any(|s| s.as_str() == Some("generateContent"))
+                });
+            if !supports_generate {
+                continue;
+            }
+            let display_name = m
+                .get("displayName")
+                .and_then(|v| v.as_str())
+                .unwrap_or(id)
+                .to_string();
+            let context_length = m
+                .get("inputTokenLimit")
+                .and_then(|v| v.as_u64())
+                .and_then(|n| u32::try_from(n).ok());
+            let (p_in, p_out) = gemini_reference_pricing(id);
+            entries.push(ModelCatalogEntry {
+                id: id.to_string(),
+                display_name,
+                prompt_price_per_m: p_in,
+                completion_price_per_m: p_out,
+                is_free: false,
+                is_local: false,
+                supports_vision: Some(super::infer_vision_capability(
+                    crate::models::ProviderKind::Gemini,
+                    id,
+                )),
+                context_length,
+            });
         }
     }
-    Ok(ids)
+    Ok(entries)
+}
+
+pub async fn fetch_models(
+    http: &Client,
+    profile: &ModelProfile,
+    api_key: Option<&str>,
+) -> Result<Vec<String>, ProviderError> {
+    let entries = fetch_models_detailed(http, profile, api_key).await?;
+    Ok(entries.into_iter().map(|e| e.id).collect())
+}
+
+fn gemini_reference_pricing(model_id: &str) -> (Option<f64>, Option<f64>) {
+    let m = model_id.to_ascii_lowercase();
+    if m.contains("2.5-pro") {
+        (Some(1.25), Some(10.0))
+    } else if m.contains("2.5-flash-lite") || m.contains("2.0-flash-lite") {
+        (Some(0.075), Some(0.30))
+    } else if m.contains("2.5-flash") {
+        (Some(0.15), Some(0.60))
+    } else if m.contains("2.0-flash") {
+        (Some(0.10), Some(0.40))
+    } else if m.contains("1.5-pro") {
+        (Some(1.25), Some(5.0))
+    } else if m.contains("1.5-flash") {
+        (Some(0.075), Some(0.30))
+    } else {
+        (None, None)
+    }
 }
 
 pub async fn ping(

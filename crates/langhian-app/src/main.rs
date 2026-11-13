@@ -10,10 +10,11 @@ use iced::{Element, Point, Size, Subscription, Task, Theme, keyboard, stream, wi
 use langhian_core::hotkey_logic::InputAction;
 use langhian_core::vocab::{export_vocab_csv, export_vocab_json};
 use langhian_core::{
-    AppConfig, AppStorage, HistoryEntry, ModelProfile, PromptPreset, ProviderError, ProviderKind,
-    SecretStore, ShortcutCombo, ShortcutConfig, TranslateInput, TranslateRequest, TranslationMode,
-    Translator, TranslatorClient, UpdateCheckResult, UpdaterClient, VocabEntry, VocabMatcher,
-    history::push_bounded_history, infer_vision_capability,
+    AppConfig, AppStorage, HistoryEntry, ModelCatalogEntry, ModelProfile, PromptPreset,
+    ProviderError, ProviderKind, SecretStore, ShortcutCombo, ShortcutConfig, TranslateInput,
+    TranslateRequest, TranslationMode, Translator, TranslatorClient, UpdateCheckResult,
+    UpdaterClient, VocabEntry, VocabMatcher, find_vocab_match_index, history::push_bounded_history,
+    infer_vision_capability, resolve_bidirectional_direction,
 };
 use platform::capture::{capture_active_monitor, crop_screen_to_png};
 use platform::clipboard::{
@@ -22,6 +23,9 @@ use platform::clipboard::{
 };
 use platform::tray::{TrayAction, TrayHandle, build_tray, load_app_icon_rgba};
 use platform::updater_exec::launch_installer;
+use platform::window_pos::{
+    active_selection_anchor_phys, compute_hud_subtitle_position, compute_smart_modal_position,
+};
 use platform::{current_cursor_pos, refresh_shortcut_config, start_keyboard_listener};
 use std::collections::{BTreeMap, HashSet};
 use std::sync::{Arc, Mutex, OnceLock};
@@ -34,7 +38,7 @@ use ui::dashboard::{
 use ui::hud::{HudState, view_hud};
 use ui::modal::{ModalMsg, ModalState, view_modal};
 use ui::snip_overlay::{SnipEvent, SnipState, view_snip_overlay};
-use ui::theme::{iced_theme_for, transparent_iced_theme_for};
+use ui::theme::transparent_iced_theme_for;
 
 #[derive(Debug, Clone)]
 enum BridgeEvent {
@@ -123,6 +127,9 @@ struct LanghianApp {
     dashboard_id: Option<window::Id>,
     dashboard_opening: bool,
     modal_id: Option<window::Id>,
+    modal_opened_at: Option<Instant>,
+    modal_has_focused: bool,
+    modal_user_dragged: bool,
     snip_id: Option<window::Id>,
     hud_id: Option<window::Id>,
 
@@ -139,10 +146,9 @@ struct LanghianApp {
 
 #[derive(Debug, Clone)]
 enum Message {
-    FontLoaded,
     Bridge(BridgeEvent),
     WindowOpened(WindowKind, window::Id),
-    WindowCloseRequested(window::Id),
+    WindowEventOccurred(window::Id, window::Event),
     GlobalEscPressed,
     HudTick,
 
@@ -153,20 +159,26 @@ enum Message {
     },
     DoubleCtrlCaptured {
         target_hwnd: isize,
+        anchor_phys: Option<(i32, i32, i32)>,
+        cursor_phys: Option<(i32, i32)>,
         result: Result<platform::clipboard::CapturedSelection, String>,
     },
     ModalTranslationFinished {
         seq: u64,
+        effective_target: String,
+        was_auto_reversed: bool,
         result: Result<(String, Option<String>), TranslationFail>,
         mode: TranslationMode,
     },
     InPlaceFlowFinished(Result<(String, String, Option<String>), String>),
     ManualTranslateFinished {
         seq: u64,
+        effective_target: String,
+        was_auto_reversed: bool,
         result: Result<(String, Option<String>), TranslationFail>,
     },
     ProbeModelFinished(Result<(bool, String), String>),
-    FetchModelsFinished(Result<Vec<String>, String>),
+    FetchModelsFinished(Result<Vec<ModelCatalogEntry>, String>),
     UpdateCheckFinished(Result<UpdateCheckResult, String>),
     UpdateDownloadFinished(Result<std::path::PathBuf, String>),
 
@@ -174,6 +186,17 @@ enum Message {
     Dashboard(DashboardMsg),
     Modal(ModalMsg),
     Snip(SnipEvent),
+    ClearCopyBadge {
+        target: CopyBadgeTarget,
+        seq: u64,
+    },
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum CopyBadgeTarget {
+    ModalSource,
+    ModalOutput,
+    DashboardManual,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -199,7 +222,7 @@ impl LanghianApp {
         let vocab_matcher = VocabMatcher::build(vocab.clone());
         let history = storage.load_history();
         let i18n = Translator::new(&config.ui_language, Some(storage.locales_dir()));
-        let dashboard = DashboardState::new(&config);
+        let dashboard = DashboardState::from_config(&config);
 
         let shared_shortcuts = Arc::new(Mutex::new(config.shortcuts.clone()));
         let (bridge_tx, bridge_rx) = unbounded_channel::<BridgeEvent>();
@@ -285,6 +308,9 @@ impl LanghianApp {
             dashboard_id: None,
             dashboard_opening,
             modal_id: None,
+            modal_opened_at: None,
+            modal_has_focused: false,
+            modal_user_dragged: false,
             snip_id: None,
             hud_id: None,
             dashboard,
@@ -330,21 +356,14 @@ impl LanghianApp {
         }
     }
 
-    fn theme(&self, window: window::Id) -> Theme {
-        if Some(window) == self.hud_id
-            || Some(window) == self.modal_id
-            || Some(window) == self.snip_id
-        {
-            transparent_iced_theme_for(self.config.theme)
-        } else {
-            iced_theme_for(self.config.theme)
-        }
+    fn theme(&self, _window: window::Id) -> Theme {
+        transparent_iced_theme_for(self.config.theme)
     }
 
     fn subscription(&self) -> Subscription<Message> {
         let mut subs = vec![
             Subscription::run(bridge_stream).map(Message::Bridge),
-            window::close_requests().map(Message::WindowCloseRequested),
+            window::events().map(|(id, ev)| Message::WindowEventOccurred(id, ev)),
         ];
 
         if self.hud_expires_at.is_some() {
@@ -366,8 +385,6 @@ impl LanghianApp {
 
     fn update(&mut self, message: Message) -> Task<Message> {
         match message {
-            Message::FontLoaded => Task::none(),
-
             Message::Bridge(BridgeEvent::Input(act)) => self.handle_input_action(act),
             Message::Bridge(BridgeEvent::Tray(act)) => self.handle_tray_action(act),
 
@@ -380,30 +397,70 @@ impl LanghianApp {
                         }
                         self.dashboard_id = Some(id);
                     }
-                    WindowKind::Modal => self.modal_id = Some(id),
+                    WindowKind::Modal => {
+                        self.modal_id = Some(id);
+                        self.modal_opened_at = Some(Instant::now());
+                        self.modal_has_focused = false;
+                        self.modal_user_dragged = false;
+                        return window::gain_focus(id);
+                    }
                     WindowKind::Snip => self.snip_id = Some(id),
                     WindowKind::Hud => self.hud_id = Some(id),
                 }
                 Task::none()
             }
 
-            Message::WindowCloseRequested(id) => {
-                if Some(id) == self.dashboard_id {
-                    self.dashboard_id = None;
-                    self.dashboard_opening = false;
-                } else if Some(id) == self.modal_id {
-                    self.modal_id = None;
-                    self.modal = None;
-                } else if Some(id) == self.snip_id {
-                    self.snip_id = None;
-                    self.snip = None;
-                } else if Some(id) == self.hud_id {
-                    self.hud_id = None;
-                    self.hud = None;
-                    self.hud_expires_at = None;
+            Message::WindowEventOccurred(id, event) => match event {
+                window::Event::CloseRequested => self.handle_window_close(id),
+                window::Event::Focused => {
+                    if Some(id) == self.modal_id {
+                        self.modal_has_focused = true;
+                    }
+                    Task::none()
                 }
-                window::close(id)
-            }
+                window::Event::Unfocused => {
+                    if Some(id) == self.modal_id {
+                        let pinned = self.modal.as_ref().is_some_and(|m| m.pinned);
+                        let past_startup_grace = self
+                            .modal_opened_at
+                            .map(|t| t.elapsed() >= Duration::from_millis(260))
+                            .unwrap_or(true);
+                        if !pinned && (self.modal_has_focused || past_startup_grace) {
+                            return self.close_modal();
+                        }
+                    }
+                    Task::none()
+                }
+                window::Event::Moved(pos) => {
+                    if Some(id) == self.modal_id {
+                        let settled = self.modal_user_dragged
+                            || self
+                                .modal_opened_at
+                                .map(|t| t.elapsed() >= Duration::from_millis(350))
+                                .unwrap_or(true);
+                        if settled {
+                            self.config.modal_position = Some([pos.x, pos.y]);
+                        }
+                    }
+                    Task::none()
+                }
+                window::Event::Resized(size) => {
+                    if Some(id) == self.modal_id {
+                        let settled = self
+                            .modal_opened_at
+                            .map(|t| t.elapsed() >= Duration::from_millis(260))
+                            .unwrap_or(true);
+                        if settled {
+                            self.config.modal_size = Some([
+                                size.width.clamp(420.0, 1200.0),
+                                size.height.clamp(320.0, 960.0),
+                            ]);
+                        }
+                    }
+                    Task::none()
+                }
+                _ => Task::none(),
+            },
 
             Message::InPlaceCaptured {
                 target_hwnd,
@@ -415,7 +472,7 @@ impl LanghianApp {
                         if self.config.show_hud {
                             return self.show_hud_toast(
                                 self.i18n.t("app.status_error"),
-                                self.i18n.t("errors.empty_selection"),
+                                Some(self.i18n.t("errors.empty_selection")),
                                 true,
                             );
                         }
@@ -423,11 +480,20 @@ impl LanghianApp {
                     }
                 };
 
+                // Double-Alt in-place mode always translates toward `target_language` (never reverses back).
+                let dir = resolve_bidirectional_direction(
+                    &captured.text,
+                    &self.config.native_language,
+                    &self.config.target_language,
+                    false,
+                    None,
+                );
                 let profile = self.config.active_model().clone();
                 let api_key = self.secrets.get_api_key(&profile.id);
                 let prompt = self.config.active_prompt().clone();
-                let source_lang = self.config.source_language.clone();
-                let target_lang = self.config.target_language.clone();
+                let source_lang = dir.effective_source;
+                let target_lang = dir.effective_target;
+                let preserve_markdown = self.config.preserve_markdown;
                 let restore_clip = self.config.restore_clipboard;
                 let client = self.client.clone();
                 let vision_msg = self.i18n.t("errors.vision_unsupported");
@@ -435,11 +501,7 @@ impl LanghianApp {
                 let rate_msg = self.i18n.t("errors.rate_limited");
 
                 let hud_task = if self.config.show_hud {
-                    self.show_hud_toast(
-                        self.i18n.t("app.title"),
-                        self.i18n.t("hud.translating_inplace"),
-                        false,
-                    )
+                    self.show_hud_toast(self.i18n.t("hud.translating_inplace"), None, false)
                 } else {
                     Task::none()
                 };
@@ -451,6 +513,7 @@ impl LanghianApp {
                             source_lang,
                             target_lang,
                             prompt,
+                            preserve_markdown,
                         };
                         let resp = client
                             .translate(&profile, api_key.as_deref(), &req)
@@ -479,6 +542,8 @@ impl LanghianApp {
 
             Message::DoubleCtrlCaptured {
                 target_hwnd,
+                anchor_phys,
+                cursor_phys,
                 result,
             } => {
                 let captured = match result {
@@ -487,7 +552,7 @@ impl LanghianApp {
                         if self.config.show_hud {
                             return self.show_hud_toast(
                                 self.i18n.t("app.status_error"),
-                                self.i18n.t("errors.empty_selection"),
+                                Some(self.i18n.t("errors.empty_selection")),
                                 true,
                             );
                         }
@@ -496,8 +561,12 @@ impl LanghianApp {
                 };
                 self.pending_target_hwnd = target_hwnd;
                 self.pending_replace_prev_clip = captured.previous_clipboard;
-                let modal = ModalState::for_text(captured.text);
-                self.open_or_update_modal(modal, TranslationMode::Modal)
+                let modal = ModalState::for_text(
+                    captured.text,
+                    self.config.modal_pinned,
+                    &self.config.native_language,
+                );
+                self.open_or_update_modal(modal, TranslationMode::Modal, anchor_phys, cursor_phys)
             }
 
             Message::GlobalEscPressed => {
@@ -505,9 +574,8 @@ impl LanghianApp {
                     self.snip = None;
                     return window::close(id);
                 }
-                if let Some(id) = self.modal_id.take() {
-                    self.modal = None;
-                    return window::close(id);
+                if self.modal_id.is_some() {
+                    return self.close_modal();
                 }
                 Task::none()
             }
@@ -525,7 +593,13 @@ impl LanghianApp {
                 Task::none()
             }
 
-            Message::ModalTranslationFinished { seq, result, mode } => {
+            Message::ModalTranslationFinished {
+                seq,
+                effective_target,
+                was_auto_reversed,
+                result,
+                mode,
+            } => {
                 if seq != self.translation_seq {
                     return Task::none();
                 }
@@ -533,19 +607,23 @@ impl LanghianApp {
                     return Task::none();
                 };
                 modal.is_loading = false;
+                modal.effective_target_lang = effective_target.clone();
+                modal.was_auto_reversed = was_auto_reversed;
                 match result {
                     Ok((translated, detected)) => {
                         modal.translated_text = translated.clone();
+                        modal.output_editor = text_editor::Content::with_text(&translated);
+                        modal.output_force_selectable = false;
                         modal.detected_source_lang = detected;
                         modal.error_message = None;
                         modal.is_vision_error = false;
-                        modal.save_translation = translated.clone();
+                        modal.copied_output = false;
                         let src_record = if modal.screenshot_png.is_some() {
                             "[Screenshot]".to_string()
                         } else {
                             modal.source_text.clone()
                         };
-                        self.record_history(mode, src_record, translated);
+                        self.record_history(mode, src_record, translated, effective_target);
                     }
                     Err(fail) => {
                         modal.error_message = Some(fail.message);
@@ -557,31 +635,35 @@ impl LanghianApp {
 
             Message::InPlaceFlowFinished(res) => match res {
                 Ok((source, translated, _)) => {
-                    self.record_history(TranslationMode::InPlace, source, translated);
+                    let target = self.config.target_language.clone();
+                    self.record_history(TranslationMode::InPlace, source, translated, target);
                     if self.config.show_hud {
-                        self.show_hud_toast(
-                            self.i18n.t("app.title"),
-                            self.i18n.t("hud.replaced_success"),
-                            false,
-                        )
+                        self.show_hud_toast(self.i18n.t("hud.replaced_success"), None, false)
                     } else {
                         Task::none()
                     }
                 }
                 Err(err) => {
                     if self.config.show_hud {
-                        self.show_hud_toast(self.i18n.t("app.status_error"), err, true)
+                        self.show_hud_toast(self.i18n.t("app.status_error"), Some(err), true)
                     } else {
                         Task::none()
                     }
                 }
             },
 
-            Message::ManualTranslateFinished { seq, result } => {
+            Message::ManualTranslateFinished {
+                seq,
+                effective_target,
+                was_auto_reversed,
+                result,
+            } => {
                 if seq != self.translation_seq {
                     return Task::none();
                 }
                 self.dashboard.is_translating = false;
+                self.dashboard.manual_auto_reversed = was_auto_reversed;
+                self.dashboard.manual_effective_target = Some(effective_target.clone());
                 match result {
                     Ok((translated, _)) => {
                         self.dashboard.manual_output = translated.clone();
@@ -592,6 +674,7 @@ impl LanghianApp {
                             TranslationMode::Manual,
                             self.dashboard.source_editor.text(),
                             translated,
+                            effective_target,
                         );
                     }
                     Err(fail) => {
@@ -625,7 +708,8 @@ impl LanghianApp {
                         Ok(list) => {
                             ed.probe_status =
                                 Some((true, format!("Fetched {} models", list.len())));
-                            ed.fetched_models = list;
+                            ed.fetched_catalog = list;
+                            ed.selected_catalog_idx = None;
                         }
                         Err(e) => {
                             ed.probe_status = Some((false, e));
@@ -640,7 +724,7 @@ impl LanghianApp {
                 match res {
                     Ok(r) => {
                         self.dashboard.update_error = None;
-                        self.dashboard.update_result = Some(r);
+                        self.dashboard.update_status = Some(r);
                     }
                     Err(e) => {
                         self.dashboard.update_error = Some(e);
@@ -669,6 +753,30 @@ impl LanghianApp {
             Message::Dashboard(msg) => self.update_dashboard(msg),
             Message::Modal(msg) => self.update_modal(msg),
             Message::Snip(ev) => self.update_snip(ev),
+            Message::ClearCopyBadge { target, seq } => {
+                match target {
+                    CopyBadgeTarget::ModalSource => {
+                        if let Some(m) = self.modal.as_mut()
+                            && m.copied_source_seq == seq
+                        {
+                            m.copied_source = false;
+                        }
+                    }
+                    CopyBadgeTarget::ModalOutput => {
+                        if let Some(m) = self.modal.as_mut()
+                            && m.copied_output_seq == seq
+                        {
+                            m.copied_output = false;
+                        }
+                    }
+                    CopyBadgeTarget::DashboardManual => {
+                        if self.dashboard.copied_manual_seq == seq {
+                            self.dashboard.copied_manual = false;
+                        }
+                    }
+                }
+                Task::none()
+            }
         }
     }
 
@@ -676,8 +784,14 @@ impl LanghianApp {
         if Some(window) == self.modal_id
             && let Some(modal) = &self.modal
         {
-            return view_modal(modal, &self.config, &self.i18n, &self.vocab_matcher)
-                .map(Message::Modal);
+            return view_modal(
+                modal,
+                &self.config,
+                &self.i18n,
+                &self.vocab,
+                &self.vocab_matcher,
+            )
+            .map(Message::Modal);
         }
         if Some(window) == self.snip_id
             && let Some(snip) = &self.snip
@@ -691,7 +805,7 @@ impl LanghianApp {
         if Some(window) == self.hud_id
             && let Some(hud) = &self.hud
         {
-            return view_hud(hud, self.config.theme);
+            return view_hud(hud, self.config.theme, &self.i18n);
         }
 
         let content: Element<'_, DashboardMsg> = container(view_dashboard(
@@ -706,6 +820,43 @@ impl LanghianApp {
         .height(iced::Length::Fill)
         .into();
         content.map(Message::Dashboard)
+    }
+
+    fn handle_window_close(&mut self, id: window::Id) -> Task<Message> {
+        if Some(id) == self.modal_id {
+            return self.close_modal();
+        }
+        if Some(id) == self.snip_id {
+            self.snip_id = None;
+            self.snip = None;
+            return window::close(id);
+        }
+        if Some(id) == self.hud_id {
+            self.hud_id = None;
+            self.hud = None;
+            self.hud_expires_at = None;
+            return window::close(id);
+        }
+        if Some(id) == self.dashboard_id {
+            self.dashboard_id = None;
+            self.dashboard_opening = false;
+            self.dashboard.is_maximized = false;
+            return window::close(id);
+        }
+        window::close(id)
+    }
+
+    fn close_modal(&mut self) -> Task<Message> {
+        self.modal = None;
+        self.modal_opened_at = None;
+        self.modal_has_focused = false;
+        self.modal_user_dragged = false;
+        let _ = self.storage.save_config(&self.config);
+        if let Some(id) = self.modal_id.take() {
+            window::close(id)
+        } else {
+            Task::none()
+        }
     }
 
     fn handle_input_action(&mut self, action: InputAction) -> Task<Message> {
@@ -740,12 +891,15 @@ impl LanghianApp {
                 self.rebuild_tray();
                 let pname = self.config.active_prompt().name.clone();
                 if self.config.show_hud {
-                    self.show_hud_toast(self.i18n.t("hud.prompt_switched"), pname, false)
+                    self.show_hud_toast(self.i18n.t("hud.prompt_switched"), Some(pname), false)
                 } else {
                     Task::none()
                 }
             }
-            TrayAction::Quit => iced::exit(),
+            TrayAction::Quit => {
+                let _ = self.storage.save_config(&self.config);
+                iced::exit()
+            }
         }
     }
 
@@ -763,11 +917,14 @@ impl LanghianApp {
     fn run_double_alt_inplace(&mut self) -> Task<Message> {
         let target_hwnd = capture_foreground_handle();
         let auto_select = self.config.shortcuts.auto_select_all_fallback;
+        let prefer_markdown = self.config.preserve_markdown;
         Task::perform(
             async move {
-                tokio::task::spawn_blocking(move || capture_selection(false, auto_select))
-                    .await
-                    .unwrap_or_else(|e| Err(e.to_string()))
+                tokio::task::spawn_blocking(move || {
+                    capture_selection(false, auto_select, prefer_markdown)
+                })
+                .await
+                .unwrap_or_else(|e| Err(e.to_string()))
             },
             move |result| Message::InPlaceCaptured {
                 target_hwnd,
@@ -778,15 +935,22 @@ impl LanghianApp {
 
     fn run_double_ctrl_modal(&mut self) -> Task<Message> {
         let target_hwnd = capture_foreground_handle();
+        let cursor_phys = current_cursor_pos();
+        let anchor_phys = active_selection_anchor_phys(target_hwnd, cursor_phys);
         let restore_clip = self.config.restore_clipboard;
+        let prefer_markdown = self.config.preserve_markdown;
         Task::perform(
             async move {
-                tokio::task::spawn_blocking(move || capture_selection(restore_clip, false))
-                    .await
-                    .unwrap_or_else(|e| Err(e.to_string()))
+                tokio::task::spawn_blocking(move || {
+                    capture_selection(restore_clip, false, prefer_markdown)
+                })
+                .await
+                .unwrap_or_else(|e| Err(e.to_string()))
             },
             move |result| Message::DoubleCtrlCaptured {
                 target_hwnd,
+                anchor_phys,
+                cursor_phys,
                 result,
             },
         )
@@ -797,7 +961,7 @@ impl LanghianApp {
         let screen = match capture_active_monitor(cursor) {
             Ok(s) => s,
             Err(e) => {
-                return self.show_hud_toast(self.i18n.t("app.status_error"), e, true);
+                return self.show_hud_toast(self.i18n.t("app.status_error"), Some(e), true);
             }
         };
 
@@ -823,26 +987,39 @@ impl LanghianApp {
         open.map(|id| Message::WindowOpened(WindowKind::Snip, id))
     }
 
-    fn open_or_update_modal(&mut self, modal: ModalState, mode: TranslationMode) -> Task<Message> {
+    fn open_or_update_modal(
+        &mut self,
+        modal: ModalState,
+        mode: TranslationMode,
+        anchor_phys: Option<(i32, i32, i32)>,
+        cursor_phys: Option<(i32, i32)>,
+    ) -> Task<Message> {
         self.modal = Some(modal);
         let translate_task = self.dispatch_modal_translation(mode);
 
+        let [modal_w, modal_h] = self.config.modal_size.unwrap_or([540.0, 460.0]);
+        let modal_w = modal_w.clamp(420.0, 1200.0);
+        let modal_h = modal_h.clamp(320.0, 960.0);
+        let pos_pt = compute_smart_modal_position(
+            self.config.modal_position,
+            anchor_phys,
+            cursor_phys,
+            modal_w,
+            modal_h,
+        );
+
         if let Some(id) = self.modal_id {
-            return Task::batch([window::gain_focus(id), translate_task]);
+            return Task::batch([
+                window::move_to(id, pos_pt),
+                window::gain_focus(id),
+                translate_task,
+            ]);
         }
 
-        let pos = match current_cursor_pos() {
-            Some((cx, cy)) => window::Position::Specific(Point::new(
-                (cx - 240).max(20) as f32,
-                (cy + 16).max(20) as f32,
-            )),
-            None => window::Position::Centered,
-        };
-
         let (_, open) = window::open(window::Settings {
-            size: Size::new(560.0, 460.0),
-            min_size: Some(Size::new(440.0, 340.0)),
-            position: pos,
+            size: Size::new(modal_w, modal_h),
+            min_size: Some(Size::new(420.0, 320.0)),
+            position: window::Position::Specific(pos_pt),
             decorations: false,
             transparent: true,
             level: window::Level::AlwaysOnTop,
@@ -869,14 +1046,35 @@ impl LanghianApp {
         self.translation_seq = self.translation_seq.wrapping_add(1);
         let seq = self.translation_seq;
 
-        let input = if let Some(png) = &modal.screenshot_png {
-            TranslateInput::ImagePng {
-                bytes: png.clone(),
-                context_hint: None,
-            }
-        } else {
-            TranslateInput::Text(modal.source_text.clone())
-        };
+        let (input, effective_source, effective_target, was_auto_reversed) =
+            if let Some(png) = &modal.screenshot_png {
+                (
+                    TranslateInput::ImagePng {
+                        bytes: png.clone(),
+                        context_hint: None,
+                    },
+                    "auto".to_string(),
+                    self.config.native_language.clone(),
+                    false,
+                )
+            } else {
+                let res = resolve_bidirectional_direction(
+                    &modal.source_text,
+                    &self.config.native_language,
+                    &self.config.target_language,
+                    true,
+                    None,
+                );
+                (
+                    TranslateInput::Text(modal.source_text.clone()),
+                    res.effective_source,
+                    res.effective_target,
+                    res.was_reversed,
+                )
+            };
+
+        modal.effective_target_lang = effective_target.clone();
+        modal.was_auto_reversed = was_auto_reversed;
 
         let profile = self.config.active_model().clone();
         if matches!(input, TranslateInput::ImagePng { .. }) && !profile.supports_vision {
@@ -889,13 +1087,15 @@ impl LanghianApp {
         modal.is_loading = true;
         modal.error_message = None;
         modal.is_vision_error = false;
+        modal.copied_output = false;
 
         let api_key = self.secrets.get_api_key(&profile.id);
         let req = TranslateRequest {
             input,
-            source_lang: self.config.source_language.clone(),
-            target_lang: self.config.target_language.clone(),
+            source_lang: effective_source,
+            target_lang: effective_target.clone(),
             prompt: self.config.active_prompt().clone(),
+            preserve_markdown: self.config.preserve_markdown,
         };
         let client = self.client.clone();
 
@@ -906,7 +1106,13 @@ impl LanghianApp {
                     Err(e) => Err(map_provider_error(e, &vision_msg, &key_msg, &rate_msg)),
                 }
             },
-            move |result| Message::ModalTranslationFinished { seq, result, mode },
+            move |result| Message::ModalTranslationFinished {
+                seq,
+                effective_target,
+                was_auto_reversed,
+                result,
+                mode,
+            },
         )
     }
 
@@ -928,7 +1134,7 @@ impl LanghianApp {
 
         let name = self.config.active_prompt().name.clone();
         if self.config.show_hud {
-            self.show_hud_toast(self.i18n.t("hud.prompt_switched"), name, false)
+            self.show_hud_toast(self.i18n.t("hud.prompt_switched"), Some(name), false)
         } else {
             Task::none()
         }
@@ -952,7 +1158,7 @@ impl LanghianApp {
         if self.config.show_hud {
             self.show_hud_toast(
                 self.i18n.t("hud.prompt_switched"),
-                format!("[{slot}] {}", found.name),
+                Some(format!("[{slot}] {}", found.name)),
                 false,
             )
         } else {
@@ -960,22 +1166,28 @@ impl LanghianApp {
         }
     }
 
-    fn show_hud_toast(&mut self, title: String, detail: String, is_error: bool) -> Task<Message> {
+    fn show_hud_toast(
+        &mut self,
+        title: String,
+        detail: Option<String>,
+        is_error: bool,
+    ) -> Task<Message> {
         self.hud = Some(HudState {
             title,
             detail,
             is_error,
         });
-        self.hud_expires_at = Some(Instant::now() + Duration::from_millis(1800));
+        self.hud_expires_at = Some(Instant::now() + Duration::from_millis(1900));
 
-        if self.hud_id.is_some() {
+        let pos_pt = compute_hud_subtitle_position(current_cursor_pos(), 460.0, 56.0);
+        if let Some(id) = self.hud_id {
             // Do NOT steal focus from the user's active app when updating HUD text.
-            return Task::none();
+            return window::move_to(id, pos_pt);
         }
 
         let (_, open) = window::open(window::Settings {
-            size: Size::new(420.0, 62.0),
-            position: window::Position::Specific(Point::new(32.0, 32.0)),
+            size: Size::new(460.0, 56.0),
+            position: window::Position::Specific(pos_pt),
             decorations: false,
             transparent: true,
             level: window::Level::AlwaysOnTop,
@@ -1029,14 +1241,23 @@ impl LanghianApp {
                 match crop_screen_to_png(&snip.screen, bounds_size.width, bounds_size.height, rect)
                 {
                     Ok(png) => {
-                        let modal = ModalState::for_screenshot(png);
-                        let modal_task =
-                            self.open_or_update_modal(modal, TranslationMode::Screenshot);
+                        let cursor_phys = current_cursor_pos();
+                        let modal = ModalState::for_screenshot(
+                            png,
+                            self.config.modal_pinned,
+                            &self.config.native_language,
+                        );
+                        let modal_task = self.open_or_update_modal(
+                            modal,
+                            TranslationMode::Screenshot,
+                            None,
+                            cursor_phys,
+                        );
                         Task::batch([close_task, modal_task])
                     }
                     Err(err) => {
                         let hud_task =
-                            self.show_hud_toast(self.i18n.t("app.status_error"), err, true);
+                            self.show_hud_toast(self.i18n.t("app.status_error"), Some(err), true);
                         Task::batch([close_task, hud_task])
                     }
                 }
@@ -1045,123 +1266,116 @@ impl LanghianApp {
     }
 
     fn update_modal(&mut self, msg: ModalMsg) -> Task<Message> {
+        let current_mode = if self
+            .modal
+            .as_ref()
+            .is_some_and(|m| m.screenshot_png.is_some())
+        {
+            TranslationMode::Screenshot
+        } else {
+            TranslationMode::Modal
+        };
+
         match msg {
             ModalMsg::DragWindow => {
+                self.modal_user_dragged = true;
                 if let Some(id) = self.modal_id {
                     window::drag(id)
                 } else {
                     Task::none()
                 }
             }
-            ModalMsg::Close => {
-                self.modal = None;
-                if let Some(id) = self.modal_id.take() {
-                    window::close(id)
+            ModalMsg::ResizeWindow(dir) => {
+                if let Some(id) = self.modal_id {
+                    window::drag_resize(id, dir)
                 } else {
                     Task::none()
                 }
             }
+            ModalMsg::CloseHovered(hovered) => {
+                if let Some(m) = self.modal.as_mut() {
+                    m.close_hovered = hovered;
+                }
+                Task::none()
+            }
+            ModalMsg::Close => self.close_modal(),
             ModalMsg::TogglePin => {
                 if let Some(m) = self.modal.as_mut() {
                     m.pinned = !m.pinned;
+                    self.config.modal_pinned = m.pinned;
+                    let _ = self.storage.save_config(&self.config);
                 }
                 Task::none()
             }
-            ModalMsg::SelectModel(id) => {
+            ModalMsg::EditSourceAction(action) => {
+                if let Some(m) = self.modal.as_mut() {
+                    m.source_editor.perform(action);
+                    m.source_text = m.source_editor.text();
+                    m.copied_source = false;
+                }
+                Task::none()
+            }
+            ModalMsg::EditOutputAction(action) => {
+                if let Some(m) = self.modal.as_mut()
+                    && !action.is_edit()
+                {
+                    m.output_editor.perform(action);
+                }
+                Task::none()
+            }
+            ModalMsg::ToggleOutputSelectable => {
+                if let Some(m) = self.modal.as_mut() {
+                    m.output_force_selectable = !m.output_force_selectable;
+                }
+                Task::none()
+            }
+            ModalMsg::TranslateOrRegenerate => self.dispatch_modal_translation(current_mode),
+            ModalMsg::CopySource => {
+                if let Some(m) = self.modal.as_mut()
+                    && !m.source_text.trim().is_empty()
+                    && set_clipboard_text(&m.source_text).is_ok()
+                {
+                    m.copied_source_seq = m.copied_source_seq.wrapping_add(1);
+                    m.copied_source = true;
+                    return schedule_copy_reset(CopyBadgeTarget::ModalSource, m.copied_source_seq);
+                }
+                Task::none()
+            }
+            ModalMsg::CopyOutput => {
+                if let Some(m) = self.modal.as_mut()
+                    && !m.translated_text.trim().is_empty()
+                    && set_clipboard_text(&m.translated_text).is_ok()
+                {
+                    m.copied_output_seq = m.copied_output_seq.wrapping_add(1);
+                    m.copied_output = true;
+                    return schedule_copy_reset(CopyBadgeTarget::ModalOutput, m.copied_output_seq);
+                }
+                Task::none()
+            }
+            ModalMsg::ToggleStarVocab => {
+                if let Some((term, translation, src_lang, target_lang)) =
+                    self.modal.as_ref().map(|m| {
+                        (
+                            m.source_text.clone(),
+                            m.translated_text.clone(),
+                            m.detected_source_lang
+                                .clone()
+                                .unwrap_or_else(|| "auto".to_string()),
+                            m.effective_target_lang.clone(),
+                        )
+                    })
+                {
+                    self.toggle_star_vocab(term, translation, src_lang, target_lang);
+                }
+                Task::none()
+            }
+            ModalMsg::SwitchToModel(id) => {
                 self.config.active_model_id = id;
                 let _ = self.storage.save_config(&self.config);
                 self.rebuild_tray();
-                let mode = if self
-                    .modal
-                    .as_ref()
-                    .is_some_and(|m| m.screenshot_png.is_some())
-                {
-                    TranslationMode::Screenshot
-                } else {
-                    TranslationMode::Modal
-                };
-                self.dispatch_modal_translation(mode)
+                self.dispatch_modal_translation(current_mode)
             }
-            ModalMsg::SelectPrompt(id) => {
-                self.config.active_prompt_id = id;
-                let _ = self.storage.save_config(&self.config);
-                self.rebuild_tray();
-                let mode = if self
-                    .modal
-                    .as_ref()
-                    .is_some_and(|m| m.screenshot_png.is_some())
-                {
-                    TranslationMode::Screenshot
-                } else {
-                    TranslationMode::Modal
-                };
-                self.dispatch_modal_translation(mode)
-            }
-            ModalMsg::SelectTargetLang(code) => {
-                self.config.target_language = code;
-                let _ = self.storage.save_config(&self.config);
-                let mode = if self
-                    .modal
-                    .as_ref()
-                    .is_some_and(|m| m.screenshot_png.is_some())
-                {
-                    TranslationMode::Screenshot
-                } else {
-                    TranslationMode::Modal
-                };
-                self.dispatch_modal_translation(mode)
-            }
-            ModalMsg::Regenerate => {
-                let mode = if self
-                    .modal
-                    .as_ref()
-                    .is_some_and(|m| m.screenshot_png.is_some())
-                {
-                    TranslationMode::Screenshot
-                } else {
-                    TranslationMode::Modal
-                };
-                self.dispatch_modal_translation(mode)
-            }
-            ModalMsg::CopyResult => {
-                if let Some(m) = self.modal.as_mut()
-                    && !m.translated_text.is_empty()
-                    && set_clipboard_text(&m.translated_text).is_ok()
-                {
-                    m.copied_feedback = true;
-                }
-                Task::none()
-            }
-            ModalMsg::ReplaceInSourceApp => {
-                let Some(m) = self.modal.take() else {
-                    return Task::none();
-                };
-                let close_task = if let Some(id) = self.modal_id.take() {
-                    window::close(id)
-                } else {
-                    Task::none()
-                };
-                if m.translated_text.is_empty() {
-                    return close_task;
-                }
-                let text = m.translated_text;
-                let restore = self.config.restore_clipboard;
-                let prev = self.pending_replace_prev_clip.take();
-                let target_hwnd = self.pending_target_hwnd;
-                let replace_task = Task::perform(
-                    async move {
-                        tokio::time::sleep(Duration::from_millis(70)).await;
-                        let _ = tokio::task::spawn_blocking(move || {
-                            restore_foreground_handle(target_hwnd);
-                            replace_with_text(&text, restore, prev)
-                        })
-                        .await;
-                    },
-                    |_| Message::FontLoaded,
-                );
-                Task::batch([close_task, replace_task])
-            }
-            ModalMsg::ClickHighlightedVocab(entry) => {
+            ModalMsg::ClickVocabHighlight(entry) => {
                 if let Some(m) = self.modal.as_mut() {
                     m.selected_vocab_preview = Some(entry);
                 }
@@ -1173,50 +1387,6 @@ impl LanghianApp {
                 }
                 Task::none()
             }
-            ModalMsg::ToggleSaveDrawer => {
-                if let Some(m) = self.modal.as_mut() {
-                    m.show_save_drawer = !m.show_save_drawer;
-                    if m.show_save_drawer && m.save_translation.is_empty() {
-                        m.save_translation = m.translated_text.clone();
-                    }
-                }
-                Task::none()
-            }
-            ModalMsg::SaveTermChanged(v) => {
-                if let Some(m) = self.modal.as_mut() {
-                    m.save_term = v;
-                }
-                Task::none()
-            }
-            ModalMsg::SaveTranslationChanged(v) => {
-                if let Some(m) = self.modal.as_mut() {
-                    m.save_translation = v;
-                }
-                Task::none()
-            }
-            ModalMsg::SaveNotesChanged(v) => {
-                if let Some(m) = self.modal.as_mut() {
-                    m.save_notes = v;
-                }
-                Task::none()
-            }
-            ModalMsg::ConfirmSaveVocab => {
-                let (term, translation, notes) = if let Some(m) = self.modal.as_mut() {
-                    let t = m.save_term.trim().to_string();
-                    let tr = m.save_translation.trim().to_string();
-                    let n = m.save_notes.trim().to_string();
-                    if t.is_empty() || tr.is_empty() {
-                        return Task::none();
-                    }
-                    m.show_save_drawer = false;
-                    m.saved_feedback = true;
-                    (t, tr, n)
-                } else {
-                    return Task::none();
-                };
-                self.add_vocab_entry(term, translation, notes);
-                Task::none()
-            }
             ModalMsg::OpenModelsSettings => {
                 self.dashboard.active_tab = DashboardTab::Models;
                 self.ensure_dashboard_open()
@@ -1226,10 +1396,86 @@ impl LanghianApp {
 
     fn update_dashboard(&mut self, msg: DashboardMsg) -> Task<Message> {
         match msg {
+            // Window chrome (custom frameless bar & resize handles)
+            DashboardMsg::DragTitlebar => {
+                if let Some(id) = self.dashboard_id {
+                    window::drag(id)
+                } else {
+                    Task::none()
+                }
+            }
+            DashboardMsg::MinimizeWindow => {
+                if let Some(id) = self.dashboard_id {
+                    window::minimize(id, true)
+                } else {
+                    Task::none()
+                }
+            }
+            DashboardMsg::ToggleMaximize => {
+                if let Some(id) = self.dashboard_id {
+                    self.dashboard.is_maximized = !self.dashboard.is_maximized;
+                    window::maximize(id, self.dashboard.is_maximized)
+                } else {
+                    Task::none()
+                }
+            }
+            DashboardMsg::TitlebarCloseHovered(hovered) => {
+                self.dashboard.titlebar_close_hovered = hovered;
+                Task::none()
+            }
+            DashboardMsg::CloseWindow => {
+                if let Some(id) = self.dashboard_id {
+                    self.handle_window_close(id)
+                } else {
+                    Task::none()
+                }
+            }
+            DashboardMsg::ResizeWindow(dir) => {
+                if let Some(id) = self.dashboard_id {
+                    window::drag_resize(id, dir)
+                } else {
+                    Task::none()
+                }
+            }
+
+            // First-run onboarding wizard
+            DashboardMsg::OnboardingStep(step) => {
+                self.dashboard.onboarding.step = step.min(2);
+                Task::none()
+            }
+            DashboardMsg::OnboardingFinish(open_models) => {
+                self.config.onboarding_completed = true;
+                self.config.ensure_valid();
+                let _ = self.storage.save_config(&self.config);
+                self.dashboard.show_onboarding = false;
+                if open_models {
+                    self.dashboard.active_tab = DashboardTab::Models;
+                }
+                Task::none()
+            }
+            DashboardMsg::OnboardingSkip => {
+                self.config.onboarding_completed = true;
+                self.config.ensure_valid();
+                let _ = self.storage.save_config(&self.config);
+                self.dashboard.show_onboarding = false;
+                Task::none()
+            }
+            DashboardMsg::OpenOnboarding => {
+                self.dashboard.onboarding.step = 0;
+                self.dashboard.show_onboarding = true;
+                Task::none()
+            }
+
             DashboardMsg::SwitchTab(tab) => {
                 self.dashboard.active_tab = tab;
                 Task::none()
             }
+            DashboardMsg::SwitchSettingsSubTab(sub) => {
+                self.dashboard.settings_subtab = sub;
+                Task::none()
+            }
+
+            // Manual Translate tab
             DashboardMsg::SourceEditorAction(action) => {
                 self.dashboard.source_editor.perform(action);
                 Task::none()
@@ -1239,8 +1485,15 @@ impl LanghianApp {
                 let _ = self.storage.save_config(&self.config);
                 Task::none()
             }
+            DashboardMsg::SelectNativeLang(code) => {
+                self.config.native_language = code;
+                self.config.ensure_valid();
+                let _ = self.storage.save_config(&self.config);
+                Task::none()
+            }
             DashboardMsg::SelectTargetLang(code) => {
                 self.config.target_language = code;
+                self.config.ensure_valid();
                 let _ = self.storage.save_config(&self.config);
                 Task::none()
             }
@@ -1250,8 +1503,18 @@ impl LanghianApp {
                         &mut self.config.source_language,
                         &mut self.config.target_language,
                     );
-                    let _ = self.storage.save_config(&self.config);
+                } else if !self
+                    .config
+                    .native_language
+                    .eq_ignore_ascii_case(&self.config.target_language)
+                {
+                    std::mem::swap(
+                        &mut self.config.native_language,
+                        &mut self.config.target_language,
+                    );
                 }
+                self.config.ensure_valid();
+                let _ = self.storage.save_config(&self.config);
                 if !self.dashboard.manual_output.is_empty() {
                     let prev_out = self.dashboard.manual_output.clone();
                     self.dashboard.source_editor = text_editor::Content::with_text(&prev_out);
@@ -1282,13 +1545,35 @@ impl LanghianApp {
                 self.dashboard.translate_error = None;
                 self.dashboard.copied_manual = false;
 
+                let (effective_source, effective_target, was_auto_reversed) =
+                    if self.config.source_language.eq_ignore_ascii_case("auto") {
+                        let res = resolve_bidirectional_direction(
+                            &text_val,
+                            &self.config.native_language,
+                            &self.config.target_language,
+                            true,
+                            None,
+                        );
+                        (res.effective_source, res.effective_target, res.was_reversed)
+                    } else {
+                        (
+                            self.config.source_language.clone(),
+                            self.config.target_language.clone(),
+                            false,
+                        )
+                    };
+
+                self.dashboard.manual_auto_reversed = was_auto_reversed;
+                self.dashboard.manual_effective_target = Some(effective_target.clone());
+
                 let profile = self.config.active_model().clone();
                 let api_key = self.secrets.get_api_key(&profile.id);
                 let req = TranslateRequest {
                     input: TranslateInput::Text(text_val),
-                    source_lang: self.config.source_language.clone(),
-                    target_lang: self.config.target_language.clone(),
+                    source_lang: effective_source,
+                    target_lang: effective_target.clone(),
                     prompt: self.config.active_prompt().clone(),
+                    preserve_markdown: self.config.preserve_markdown,
                 };
                 let client = self.client.clone();
                 let vision_msg = self.i18n.t("errors.vision_unsupported");
@@ -1302,7 +1587,12 @@ impl LanghianApp {
                             Err(e) => Err(map_provider_error(e, &vision_msg, &key_msg, &rate_msg)),
                         }
                     },
-                    move |result| Message::ManualTranslateFinished { seq, result },
+                    move |result| Message::ManualTranslateFinished {
+                        seq,
+                        effective_target,
+                        was_auto_reversed,
+                        result,
+                    },
                 )
             }
             DashboardMsg::TriggerScreenshot => self.start_screenshot_capture(),
@@ -1310,6 +1600,8 @@ impl LanghianApp {
                 self.dashboard.source_editor = text_editor::Content::new();
                 self.dashboard.manual_output.clear();
                 self.dashboard.translate_error = None;
+                self.dashboard.manual_auto_reversed = false;
+                self.dashboard.manual_effective_target = None;
                 self.dashboard.copied_manual = false;
                 Task::none()
             }
@@ -1317,8 +1609,25 @@ impl LanghianApp {
                 if !self.dashboard.manual_output.is_empty()
                     && set_clipboard_text(&self.dashboard.manual_output).is_ok()
                 {
+                    self.dashboard.copied_manual_seq =
+                        self.dashboard.copied_manual_seq.wrapping_add(1);
                     self.dashboard.copied_manual = true;
+                    return schedule_copy_reset(
+                        CopyBadgeTarget::DashboardManual,
+                        self.dashboard.copied_manual_seq,
+                    );
                 }
+                Task::none()
+            }
+            DashboardMsg::ToggleStarManualVocab => {
+                let term = self.dashboard.source_editor.text();
+                let tr = self.dashboard.manual_output.clone();
+                let tgt = self
+                    .dashboard
+                    .manual_effective_target
+                    .clone()
+                    .unwrap_or_else(|| self.config.target_language.clone());
+                self.toggle_star_vocab(term, tr, self.config.source_language.clone(), tgt);
                 Task::none()
             }
             DashboardMsg::ToggleSaveManualBox => {
@@ -1341,18 +1650,29 @@ impl LanghianApp {
                 self.dashboard.save_translation = v;
                 Task::none()
             }
-            DashboardMsg::SaveManualNotesChanged(v) => {
-                self.dashboard.save_notes = v;
+            DashboardMsg::SaveManualNotesAction(action) => {
+                self.dashboard.save_notes_editor.perform(action);
                 Task::none()
             }
             DashboardMsg::ConfirmSaveManualVocab => {
                 let term = self.dashboard.save_term.trim().to_string();
                 let tr = self.dashboard.save_translation.trim().to_string();
-                let notes = self.dashboard.save_notes.trim().to_string();
+                let notes = self.dashboard.save_notes_editor.text().trim().to_string();
+                let tgt = self
+                    .dashboard
+                    .manual_effective_target
+                    .clone()
+                    .unwrap_or_else(|| self.config.target_language.clone());
                 if !term.is_empty() && !tr.is_empty() {
-                    self.add_vocab_entry(term, tr, notes);
+                    self.add_vocab_entry_with_langs(
+                        term,
+                        tr,
+                        notes,
+                        self.config.source_language.clone(),
+                        tgt,
+                    );
                     self.dashboard.show_save_vocab_box = false;
-                    self.dashboard.save_notes.clear();
+                    self.dashboard.save_notes_editor = text_editor::Content::new();
                 }
                 Task::none()
             }
@@ -1367,6 +1687,7 @@ impl LanghianApp {
 
             // Models Tab
             DashboardMsg::StartAddPreset(kind) => {
+                self.dashboard.selected_preset_kind = Some(kind);
                 let profile = match kind {
                     ModelPresetKind::GoogleFree => ModelProfile::google_translate_free(),
                     ModelPresetKind::OpenRouter => ModelProfile::preset_openrouter(),
@@ -1388,6 +1709,7 @@ impl LanghianApp {
                 Task::none()
             }
             DashboardMsg::StartEditModel(id) => {
+                self.dashboard.selected_preset_kind = None;
                 if let Some(m) = self.config.models.iter().find(|m| m.id == id) {
                     let key = self.secrets.get_api_key(&m.id);
                     self.dashboard.model_editor =
@@ -1418,6 +1740,7 @@ impl LanghianApp {
             }
             DashboardMsg::CancelEditModel => {
                 self.dashboard.model_editor = None;
+                self.dashboard.selected_preset_kind = None;
                 Task::none()
             }
             DashboardMsg::ModelNameChanged(v) => {
@@ -1436,7 +1759,10 @@ impl LanghianApp {
                             ed.supports_vision = false;
                         }
                         ProviderKind::OpenAiCompatible => {
-                            if ed.base_url.is_empty() || ed.base_url.contains("anthropic") {
+                            if ed.base_url.is_empty()
+                                || ed.base_url.contains("anthropic")
+                                || ed.base_url.contains("generativelanguage")
+                            {
                                 ed.base_url = "https://openrouter.ai/api/v1".to_string();
                             }
                             ed.supports_vision = infer_vision_capability(kind, &ed.model_id);
@@ -1506,10 +1832,31 @@ impl LanghianApp {
                 }
                 Task::none()
             }
-            DashboardMsg::PickFetchedModel(id) => {
+            DashboardMsg::ModelCatalogFilterChanged(q) => {
                 if let Some(ed) = self.dashboard.model_editor.as_mut() {
-                    ed.model_id = id.clone();
-                    ed.supports_vision = infer_vision_capability(ed.provider, &id);
+                    ed.catalog_filter = q;
+                }
+                Task::none()
+            }
+            DashboardMsg::PickCatalogModel(idx) => {
+                if let Some(ed) = self.dashboard.model_editor.as_mut()
+                    && let Some(entry) = ed.fetched_catalog.get(idx).cloned()
+                {
+                    ed.selected_catalog_idx = Some(idx);
+                    ed.model_id = entry.id.clone();
+                    if ed.editing_id.is_none() || ed.name.trim().is_empty() {
+                        ed.name = if entry.display_name.trim().is_empty() {
+                            entry.id.clone()
+                        } else {
+                            entry.display_name.clone()
+                        };
+                    }
+                    if let Some(vis) = entry.supports_vision {
+                        ed.supports_vision = vis;
+                        ed.vision_source = langhian_core::CapabilitySource::AutoDetected;
+                    } else if ed.vision_source != langhian_core::CapabilitySource::ManualOverride {
+                        ed.supports_vision = infer_vision_capability(ed.provider, &entry.id);
+                    }
                 }
                 Task::none()
             }
@@ -1542,6 +1889,7 @@ impl LanghianApp {
                     return Task::none();
                 };
                 ed.is_probing = true;
+                ed.probe_status = None;
                 let profile = build_profile_from_editor(ed);
                 let key = if ed.api_key.trim().is_empty() {
                     None
@@ -1552,7 +1900,7 @@ impl LanghianApp {
                 Task::perform(
                     async move {
                         client
-                            .fetch_available_models(&profile, key.as_deref())
+                            .fetch_available_models_detailed(&profile, key.as_deref())
                             .await
                             .map_err(|e| e.to_string())
                     },
@@ -1563,6 +1911,7 @@ impl LanghianApp {
                 let Some(ed) = self.dashboard.model_editor.take() else {
                     return Task::none();
                 };
+                self.dashboard.selected_preset_kind = None;
                 let profile = build_profile_from_editor(&ed);
                 let pid = profile.id.clone();
                 let _ = self.secrets.set_api_key(&pid, &ed.api_key);
@@ -1579,7 +1928,7 @@ impl LanghianApp {
             }
 
             // Prompts Tab
-            DashboardMsg::StartNewPrompt => {
+            DashboardMsg::StartAddPrompt => {
                 let preset = PromptPreset {
                     id: uuid_v4(),
                     name: "Custom Prompt".to_string(),
@@ -1609,6 +1958,12 @@ impl LanghianApp {
                 }
                 Task::none()
             }
+            DashboardMsg::SelectPromptActive(id) => {
+                self.config.active_prompt_id = id;
+                let _ = self.storage.save_config(&self.config);
+                self.rebuild_tray();
+                Task::none()
+            }
             DashboardMsg::CancelEditPrompt => {
                 self.dashboard.prompt_editor = None;
                 Task::none()
@@ -1621,25 +1976,25 @@ impl LanghianApp {
             }
             DashboardMsg::PromptSlotChanged(slot) => {
                 if let Some(ed) = self.dashboard.prompt_editor.as_mut() {
-                    ed.shortcut_slot = slot.0;
+                    ed.shortcut_slot = slot;
                 }
                 Task::none()
             }
-            DashboardMsg::PromptSystemChanged(v) => {
+            DashboardMsg::PromptSystemAction(action) => {
                 if let Some(ed) = self.dashboard.prompt_editor.as_mut() {
-                    ed.system_prompt = v;
+                    ed.system_editor.perform(action);
                 }
                 Task::none()
             }
-            DashboardMsg::PromptUserTemplateChanged(v) => {
+            DashboardMsg::PromptUserTemplateAction(action) => {
                 if let Some(ed) = self.dashboard.prompt_editor.as_mut() {
-                    ed.user_template = v;
+                    ed.user_template_editor.perform(action);
                 }
                 Task::none()
             }
-            DashboardMsg::PromptVisionChanged(v) => {
+            DashboardMsg::PromptVisionAction(action) => {
                 if let Some(ed) = self.dashboard.prompt_editor.as_mut() {
-                    ed.vision_instruction = v;
+                    ed.vision_editor.perform(action);
                 }
                 Task::none()
             }
@@ -1656,9 +2011,9 @@ impl LanghianApp {
                         ed.name.trim().to_string()
                     },
                     shortcut_slot: ed.shortcut_slot,
-                    system_prompt: ed.system_prompt,
-                    user_template: ed.user_template,
-                    vision_instruction: ed.vision_instruction,
+                    system_prompt: ed.system_editor.text(),
+                    user_template: ed.user_template_editor.text(),
+                    vision_instruction: ed.vision_editor.text(),
                 };
 
                 // Clear duplicate shortcut slot from other prompts
@@ -1697,19 +2052,24 @@ impl LanghianApp {
                 self.dashboard.new_vocab_translation = v;
                 Task::none()
             }
-            DashboardMsg::NewVocabNotesChanged(v) => {
-                self.dashboard.new_vocab_notes = v;
+            DashboardMsg::NewVocabNotesAction(action) => {
+                self.dashboard.new_vocab_notes_editor.perform(action);
                 Task::none()
             }
             DashboardMsg::ConfirmAddVocab => {
                 let t = self.dashboard.new_vocab_term.trim().to_string();
                 let tr = self.dashboard.new_vocab_translation.trim().to_string();
-                let n = self.dashboard.new_vocab_notes.trim().to_string();
+                let n = self
+                    .dashboard
+                    .new_vocab_notes_editor
+                    .text()
+                    .trim()
+                    .to_string();
                 if !t.is_empty() && !tr.is_empty() {
                     self.add_vocab_entry(t, tr, n);
                     self.dashboard.new_vocab_term.clear();
                     self.dashboard.new_vocab_translation.clear();
-                    self.dashboard.new_vocab_notes.clear();
+                    self.dashboard.new_vocab_notes_editor = text_editor::Content::new();
                     self.dashboard.show_add_vocab_form = false;
                 }
                 Task::none()
@@ -1743,8 +2103,13 @@ impl LanghianApp {
                 let _ = set_clipboard_text(&txt);
                 Task::none()
             }
-            DashboardMsg::SaveHistoryToVocab(item) => {
-                self.add_vocab_entry(item.source_text, item.translated_text, String::new());
+            DashboardMsg::ToggleHistoryStarVocab(item) => {
+                self.toggle_star_vocab(
+                    item.source_text,
+                    item.translated_text,
+                    "auto".to_string(),
+                    item.target_lang,
+                );
                 Task::none()
             }
             DashboardMsg::ClearHistory => {
@@ -1753,7 +2118,7 @@ impl LanghianApp {
                 Task::none()
             }
 
-            // Settings & Updates
+            // Settings & Updates (every change auto-saves immediately)
             DashboardMsg::UiLanguageChanged(code) => {
                 self.config.ui_language = code.clone();
                 self.i18n.set_language(&code);
@@ -1768,47 +2133,66 @@ impl LanghianApp {
             }
             DashboardMsg::ToggleDoubleAlt(v) => {
                 self.config.shortcuts.enable_double_alt = v;
+                self.sync_shortcuts_and_save();
                 Task::none()
             }
             DashboardMsg::ToggleAutoSelectFallback(v) => {
                 self.config.shortcuts.auto_select_all_fallback = v;
+                self.sync_shortcuts_and_save();
                 Task::none()
             }
             DashboardMsg::ToggleDoubleCtrl(v) => {
                 self.config.shortcuts.enable_double_ctrl = v;
+                self.sync_shortcuts_and_save();
                 Task::none()
             }
             DashboardMsg::DoubleTapMsChanged(v) => {
-                self.dashboard.double_tap_ms_draft = v;
+                self.dashboard.double_tap_ms_input = v.clone();
+                if let Ok(ms) = v.trim().parse::<u64>() {
+                    self.config.shortcuts.double_tap_ms = ms.clamp(160, 800);
+                    self.sync_shortcuts_and_save();
+                }
                 Task::none()
             }
-            DashboardMsg::ScreenshotHotkeyChanged(v) => {
-                self.dashboard.screenshot_hotkey_draft = v;
+            DashboardMsg::HotkeyScreenshotChanged(v) => {
+                self.dashboard.hotkey_screenshot = v;
+                self.parse_and_save_hotkeys();
                 Task::none()
             }
-            DashboardMsg::NextPromptHotkeyChanged(v) => {
-                self.dashboard.next_prompt_hotkey_draft = v;
+            DashboardMsg::HotkeyNextPromptChanged(v) => {
+                self.dashboard.hotkey_next_prompt = v;
+                self.parse_and_save_hotkeys();
                 Task::none()
             }
-            DashboardMsg::PrevPromptHotkeyChanged(v) => {
-                self.dashboard.prev_prompt_hotkey_draft = v;
+            DashboardMsg::HotkeyPrevPromptChanged(v) => {
+                self.dashboard.hotkey_prev_prompt = v;
+                self.parse_and_save_hotkeys();
                 Task::none()
             }
-            DashboardMsg::DashboardHotkeyChanged(v) => {
-                self.dashboard.dashboard_hotkey_draft = v;
+            DashboardMsg::HotkeyDashboardChanged(v) => {
+                self.dashboard.hotkey_dashboard = v;
+                self.parse_and_save_hotkeys();
                 Task::none()
             }
             DashboardMsg::ToggleRestoreClipboard(v) => {
                 self.config.restore_clipboard = v;
+                let _ = self.storage.save_config(&self.config);
                 Task::none()
             }
             DashboardMsg::ToggleLaunchStartup(v) => {
                 self.config.launch_at_startup = v;
                 let _ = platform::autostart::set_launch_at_startup(v);
+                let _ = self.storage.save_config(&self.config);
                 Task::none()
             }
             DashboardMsg::ToggleShowHud(v) => {
                 self.config.show_hud = v;
+                let _ = self.storage.save_config(&self.config);
+                Task::none()
+            }
+            DashboardMsg::TogglePreserveMarkdown(v) => {
+                self.config.preserve_markdown = v;
+                let _ = self.storage.save_config(&self.config);
                 Task::none()
             }
             DashboardMsg::ToggleAutoCheckUpdates(v) => {
@@ -1816,40 +2200,14 @@ impl LanghianApp {
                 let _ = self.storage.save_config(&self.config);
                 Task::none()
             }
-            DashboardMsg::SaveSettings => {
-                if let Ok(ms) = self.dashboard.double_tap_ms_draft.trim().parse::<u64>() {
-                    self.config.shortcuts.double_tap_ms = ms.clamp(160, 800);
-                }
-                if let Some(c) =
-                    ShortcutCombo::parse_display(&self.dashboard.screenshot_hotkey_draft)
-                {
-                    self.config.shortcuts.screenshot = c;
-                }
-                if let Some(c) =
-                    ShortcutCombo::parse_display(&self.dashboard.next_prompt_hotkey_draft)
-                {
-                    self.config.shortcuts.next_prompt = c;
-                }
-                if let Some(c) =
-                    ShortcutCombo::parse_display(&self.dashboard.prev_prompt_hotkey_draft)
-                {
-                    self.config.shortcuts.prev_prompt = c;
-                }
-                if let Some(c) =
-                    ShortcutCombo::parse_display(&self.dashboard.dashboard_hotkey_draft)
-                {
-                    self.config.shortcuts.open_dashboard = c;
-                }
-                self.config.ensure_valid();
+            DashboardMsg::ResetModalPosition => {
+                self.config.modal_position = None;
+                self.config.modal_size = None;
                 let _ = self.storage.save_config(&self.config);
-                if let Ok(mut g) = self.shared_shortcuts.lock() {
-                    *g = self.config.shortcuts.clone();
-                }
-                refresh_shortcut_config(&self.config.shortcuts);
                 self.dashboard.settings_toast = Some(self.i18n.t("settings.saved_toast"));
                 Task::none()
             }
-            DashboardMsg::CheckForUpdates => {
+            DashboardMsg::CheckUpdatesNow => {
                 self.dashboard.update_checking = true;
                 self.dashboard.update_error = None;
                 let updater = self.updater.clone();
@@ -1864,7 +2222,7 @@ impl LanghianApp {
                 )
             }
             DashboardMsg::DownloadAndInstallUpdate => {
-                let Some(res) = &self.dashboard.update_result else {
+                let Some(res) = &self.dashboard.update_status else {
                     return Task::none();
                 };
                 let Some(asset) = res.installer_asset.clone() else {
@@ -1890,14 +2248,92 @@ impl LanghianApp {
         }
     }
 
+    fn sync_shortcuts_and_save(&mut self) {
+        self.config.ensure_valid();
+        let _ = self.storage.save_config(&self.config);
+        if let Ok(mut g) = self.shared_shortcuts.lock() {
+            *g = self.config.shortcuts.clone();
+        }
+        refresh_shortcut_config(&self.config.shortcuts);
+        self.dashboard.settings_toast = Some(self.i18n.t("settings.saved_toast"));
+    }
+
+    fn parse_and_save_hotkeys(&mut self) {
+        let mut all_valid = true;
+        if let Some(c) = ShortcutCombo::parse_display(&self.dashboard.hotkey_screenshot) {
+            self.config.shortcuts.screenshot = c;
+        } else {
+            all_valid = false;
+        }
+        if let Some(c) = ShortcutCombo::parse_display(&self.dashboard.hotkey_next_prompt) {
+            self.config.shortcuts.next_prompt = c;
+        } else {
+            all_valid = false;
+        }
+        if let Some(c) = ShortcutCombo::parse_display(&self.dashboard.hotkey_prev_prompt) {
+            self.config.shortcuts.prev_prompt = c;
+        } else {
+            all_valid = false;
+        }
+        if let Some(c) = ShortcutCombo::parse_display(&self.dashboard.hotkey_dashboard) {
+            self.config.shortcuts.open_dashboard = c;
+        } else {
+            all_valid = false;
+        }
+
+        if all_valid {
+            self.dashboard.settings_error = None;
+            self.sync_shortcuts_and_save();
+        } else {
+            self.dashboard.settings_error = Some(self.i18n.t("settings.hotkey_syntax_hint"));
+        }
+    }
+
+    fn toggle_star_vocab(
+        &mut self,
+        term: String,
+        translation: String,
+        source_lang: String,
+        target_lang: String,
+    ) {
+        let trimmed = term.trim();
+        if trimmed.is_empty() {
+            return;
+        }
+        if let Some(idx) = find_vocab_match_index(&self.vocab, trimmed, &translation) {
+            self.vocab.remove(idx);
+            self.vocab_matcher = VocabMatcher::build(self.vocab.clone());
+            let _ = self.storage.save_vocab(&self.vocab);
+        } else if !translation.trim().is_empty() {
+            self.add_vocab_entry_with_langs(
+                term,
+                translation,
+                String::new(),
+                source_lang,
+                target_lang,
+            );
+        }
+    }
+
     fn add_vocab_entry(&mut self, term: String, translation: String, notes: String) {
-        let entry = VocabEntry::new(
+        self.add_vocab_entry_with_langs(
             term,
             translation,
             notes,
             self.config.source_language.clone(),
             self.config.target_language.clone(),
         );
+    }
+
+    fn add_vocab_entry_with_langs(
+        &mut self,
+        term: String,
+        translation: String,
+        notes: String,
+        source_lang: String,
+        target_lang: String,
+    ) {
+        let entry = VocabEntry::new(term, translation, notes, source_lang, target_lang);
         // Deduplicate by case-insensitive term
         let mut seen: HashSet<String> = HashSet::new();
         self.vocab.insert(0, entry);
@@ -1907,14 +2343,20 @@ impl LanghianApp {
         let _ = self.storage.save_vocab(&self.vocab);
     }
 
-    fn record_history(&mut self, mode: TranslationMode, source: String, translated: String) {
+    fn record_history(
+        &mut self,
+        mode: TranslationMode,
+        source: String,
+        translated: String,
+        target_lang: String,
+    ) {
         let entry = HistoryEntry::new(
             mode,
             source,
             translated,
             self.config.active_model().name.clone(),
             self.config.active_prompt().name.clone(),
-            self.config.target_language.clone(),
+            target_lang,
         );
         push_bounded_history(&mut self.history, entry);
         let _ = self.storage.save_history(&self.history);
@@ -1925,6 +2367,15 @@ impl LanghianApp {
             tray.rebuild_menu(&self.config, &self.i18n);
         }
     }
+}
+
+fn schedule_copy_reset(target: CopyBadgeTarget, seq: u64) -> Task<Message> {
+    Task::perform(
+        async move {
+            tokio::time::sleep(Duration::from_millis(1500)).await;
+        },
+        move |_| Message::ClearCopyBadge { target, seq },
+    )
 }
 
 fn floating_platform_specific() -> window::settings::PlatformSpecific {
@@ -1943,15 +2394,32 @@ fn floating_platform_specific() -> window::settings::PlatformSpecific {
     }
 }
 
+fn dashboard_platform_specific() -> window::settings::PlatformSpecific {
+    #[cfg(target_os = "windows")]
+    {
+        window::settings::PlatformSpecific {
+            skip_taskbar: false,
+            undecorated_shadow: false,
+            corner_preference: window::settings::platform::CornerPreference::DoNotRound,
+            ..Default::default()
+        }
+    }
+    #[cfg(not(target_os = "windows"))]
+    {
+        window::settings::PlatformSpecific::default()
+    }
+}
+
 fn open_dashboard_task(icon: Option<window::Icon>) -> Task<Message> {
     let (_, open) = window::open(window::Settings {
-        size: Size::new(1020.0, 700.0),
-        min_size: Some(Size::new(820.0, 560.0)),
+        size: Size::new(1060.0, 720.0),
+        min_size: Some(Size::new(900.0, 600.0)),
         position: window::Position::Centered,
-        decorations: true,
-        transparent: false,
+        decorations: false,
+        transparent: true,
         icon,
         exit_on_close_request: false,
+        platform_specific: dashboard_platform_specific(),
         ..Default::default()
     });
     open.map(|id| Message::WindowOpened(WindowKind::Dashboard, id))

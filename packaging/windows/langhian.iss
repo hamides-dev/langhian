@@ -5,7 +5,7 @@
 #define MyAppExeName "langhian.exe"
 
 #ifndef MyAppVersion
-  #define MyAppVersion "0.1.1"
+  #define MyAppVersion "0.2.0"
 #endif
 
 [Setup]

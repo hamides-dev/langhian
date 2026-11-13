@@ -3,7 +3,9 @@ pub mod gemini;
 pub mod google_free;
 pub mod openai_compat;
 
-use crate::models::{ModelProfile, PromptPreset, ProviderKind, language_display_name};
+use crate::models::{
+    ModelCatalogEntry, ModelProfile, PromptPreset, ProviderKind, language_display_name,
+};
 use reqwest::Client;
 use std::time::Duration;
 use thiserror::Error;
@@ -23,6 +25,7 @@ pub struct TranslateRequest {
     pub source_lang: String,
     pub target_lang: String,
     pub prompt: PromptPreset,
+    pub preserve_markdown: bool,
 }
 
 #[derive(Debug, Clone)]
@@ -119,6 +122,7 @@ impl TranslatorClient {
                     source_lang: "en".to_string(),
                     target_lang: "es".to_string(),
                     prompt: PromptPreset::defaults().into_iter().next().unwrap(),
+                    preserve_markdown: false,
                 };
                 google_free::translate(&self.http, profile, &test_req).await?;
                 Ok(ModelCapabilityProbe {
@@ -161,34 +165,94 @@ impl TranslatorClient {
         }
     }
 
+    pub async fn fetch_available_models_detailed(
+        &self,
+        profile: &ModelProfile,
+        api_key: Option<&str>,
+    ) -> Result<Vec<ModelCatalogEntry>, ProviderError> {
+        match profile.provider {
+            ProviderKind::GoogleTranslateFree => Ok(vec![ModelCatalogEntry {
+                id: "gtx-free".to_string(),
+                display_name: "Google Translate (Free)".to_string(),
+                prompt_price_per_m: Some(0.0),
+                completion_price_per_m: Some(0.0),
+                is_free: true,
+                is_local: false,
+                supports_vision: Some(false),
+                context_length: None,
+            }]),
+            ProviderKind::OpenAiCompatible => {
+                openai_compat::fetch_models_detailed(&self.http, profile, api_key).await
+            }
+            ProviderKind::Anthropic => {
+                match anthropic::fetch_models_detailed(&self.http, profile, api_key).await {
+                    Ok(list) if !list.is_empty() => Ok(list),
+                    Ok(_) | Err(ProviderError::ApiError { status: 404, .. }) => Ok(vec![
+                        ModelCatalogEntry {
+                            id: "claude-sonnet-4-20250514".to_string(),
+                            display_name: "Claude Sonnet 4".to_string(),
+                            prompt_price_per_m: Some(3.0),
+                            completion_price_per_m: Some(15.0),
+                            is_free: false,
+                            is_local: false,
+                            supports_vision: Some(true),
+                            context_length: Some(200_000),
+                        },
+                        ModelCatalogEntry {
+                            id: "claude-3-7-sonnet-latest".to_string(),
+                            display_name: "Claude 3.7 Sonnet".to_string(),
+                            prompt_price_per_m: Some(3.0),
+                            completion_price_per_m: Some(15.0),
+                            is_free: false,
+                            is_local: false,
+                            supports_vision: Some(true),
+                            context_length: Some(200_000),
+                        },
+                        ModelCatalogEntry {
+                            id: "claude-3-5-haiku-latest".to_string(),
+                            display_name: "Claude 3.5 Haiku".to_string(),
+                            prompt_price_per_m: Some(0.80),
+                            completion_price_per_m: Some(4.0),
+                            is_free: false,
+                            is_local: false,
+                            supports_vision: Some(true),
+                            context_length: Some(200_000),
+                        },
+                    ]),
+                    Err(e) => Err(e),
+                }
+            }
+            ProviderKind::Gemini => {
+                gemini::fetch_models_detailed(&self.http, profile, api_key).await
+            }
+        }
+    }
+
     pub async fn fetch_available_models(
         &self,
         profile: &ModelProfile,
         api_key: Option<&str>,
     ) -> Result<Vec<String>, ProviderError> {
-        match profile.provider {
-            ProviderKind::GoogleTranslateFree => Ok(vec!["gtx-free".to_string()]),
-            ProviderKind::OpenAiCompatible => {
-                openai_compat::fetch_models(&self.http, profile, api_key).await
-            }
-            ProviderKind::Anthropic => Ok(vec![
-                "claude-sonnet-4-20250514".to_string(),
-                "claude-3-7-sonnet-latest".to_string(),
-                "claude-3-5-haiku-latest".to_string(),
-            ]),
-            ProviderKind::Gemini => gemini::fetch_models(&self.http, profile, api_key).await,
-        }
+        let detailed = self
+            .fetch_available_models_detailed(profile, api_key)
+            .await?;
+        Ok(detailed.into_iter().map(|m| m.id).collect())
     }
 }
+
+const MARKDOWN_SYSTEM_INSTRUCTION: &str = "\n\nWhen input contains Markdown formatting (headings such as #, ##, ###, lists, blockquotes, **bold**, *italic*, or `inline code`), preserve all Markdown markers and structural hierarchy cleanly in the translation without flattening headings into plain prose.";
 
 pub fn build_text_prompts(req: &TranslateRequest) -> (String, String) {
     let source_name = language_display_name(&req.source_lang);
     let target_name = language_display_name(&req.target_lang);
-    let system = req
+    let mut system = req
         .prompt
         .system_prompt
         .replace("{source_lang}", source_name)
         .replace("{target_lang}", target_name);
+    if req.preserve_markdown {
+        system.push_str(MARKDOWN_SYSTEM_INSTRUCTION);
+    }
     let text = match &req.input {
         TranslateInput::Text(t) => t.as_str(),
         TranslateInput::ImagePng { .. } => "",
@@ -202,11 +266,14 @@ pub fn build_text_prompts(req: &TranslateRequest) -> (String, String) {
 pub fn build_vision_prompts(req: &TranslateRequest) -> (String, String) {
     let source_name = language_display_name(&req.source_lang);
     let target_name = language_display_name(&req.target_lang);
-    let system = req
+    let mut system = req
         .prompt
         .system_prompt
         .replace("{source_lang}", source_name)
         .replace("{target_lang}", target_name);
+    if req.preserve_markdown {
+        system.push_str(MARKDOWN_SYSTEM_INSTRUCTION);
+    }
     let mut user = req.prompt.render_vision_prompt(target_name);
     if let TranslateInput::ImagePng {
         context_hint: Some(hint),
@@ -303,6 +370,7 @@ mod tests {
             source_lang: "auto".to_string(),
             target_lang: "fa".to_string(),
             prompt: PromptPreset::defaults().into_iter().next().unwrap(),
+            preserve_markdown: false,
         };
 
         let res = client.translate(&profile, None, &req).await;
@@ -321,6 +389,7 @@ mod tests {
             source_lang: "auto".to_string(),
             target_lang: "en".to_string(),
             prompt: PromptPreset::defaults().into_iter().next().unwrap(),
+            preserve_markdown: false,
         };
 
         let res = client.translate(&profile, None, &req).await;
