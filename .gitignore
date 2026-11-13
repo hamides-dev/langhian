@@ -1,0 +1,11 @@
+/target/
+**/*.rs.bk
+*.pdb
+*.exe
+*.msi
+*.dmg
+*.AppImage
+.DS_Store
+Thumbs.db
+.env
+*.local.json

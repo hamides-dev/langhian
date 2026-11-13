@@ -1,0 +1,33 @@
+{
+  "version": "0.1.0",
+  "tag": "v0.1.0",
+  "published_at": "2026-11-13T00:00:00Z",
+  "release_url": "https://github.com/hamides-dev/langhian/releases/tag/v0.1.0",
+  "notes": "Initial public release of Langhian Translation: pure Rust native desktop translator with multi-provider AI, free Google Translate, double-tap Alt in-place replacement, double-tap Ctrl modal with vocabulary highlighting, vision-gated screenshot translation, and English/Persian/Turkish UI.",
+  "assets": {
+    "windows_x86_64_installer": {
+      "url": "https://github.com/hamides-dev/langhian/releases/download/v0.1.0/langhian-setup-windows-x86_64.exe",
+      "sha256": ""
+    },
+    "windows_x86_64_portable": {
+      "url": "https://github.com/hamides-dev/langhian/releases/download/v0.1.0/langhian-windows-x86_64.zip",
+      "sha256": ""
+    },
+    "macos_arm64_dmg": {
+      "url": "https://github.com/hamides-dev/langhian/releases/download/v0.1.0/langhian-macos-arm64.dmg",
+      "sha256": ""
+    },
+    "macos_x86_64_dmg": {
+      "url": "https://github.com/hamides-dev/langhian/releases/download/v0.1.0/langhian-macos-x86_64.dmg",
+      "sha256": ""
+    },
+    "linux_x86_64_deb": {
+      "url": "https://github.com/hamides-dev/langhian/releases/download/v0.1.0/langhian-linux-amd64.deb",
+      "sha256": ""
+    },
+    "linux_x86_64_tar": {
+      "url": "https://github.com/hamides-dev/langhian/releases/download/v0.1.0/langhian-linux-x86_64.tar.gz",
+      "sha256": ""
+    }
+  }
+}

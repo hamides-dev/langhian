@@ -1,0 +1,215 @@
+name: Release
+
+on:
+  push:
+    tags:
+      - "v*"
+  workflow_dispatch:
+    inputs:
+      tag:
+        description: "Release tag (e.g. v0.1.0)"
+        required: false
+        default: "v0.1.0"
+
+permissions:
+  contents: write
+
+env:
+  CARGO_TERM_COLOR: always
+
+jobs:
+  build-windows:
+    name: Windows x86_64
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: x86_64-pc-windows-msvc
+      - uses: Swatinem/rust-cache@v2
+
+      - name: Build Release Binary
+        run: cargo build --release --target x86_64-pc-windows-msvc -p langhian-app
+
+      - name: Package Portable ZIP
+        shell: pwsh
+        run: |
+          New-Item -ItemType Directory -Force -Path dist/portable | Out-Null
+          Copy-Item target/x86_64-pc-windows-msvc/release/langhian.exe dist/portable/langhian.exe
+          Copy-Item README.md, LICENSE, THIRD_PARTY_LICENSES.md dist/portable/
+          Compress-Archive -Path dist/portable/* -DestinationPath dist/langhian-windows-x86_64.zip -Force
+
+      - name: Build Inno Setup Installer
+        shell: pwsh
+        run: |
+          choco install innosetup -y --no-progress
+          $version = "${{ github.ref_name }}".TrimStart('v')
+          if (-not $version -or $version -eq "main") { $version = "0.1.0" }
+          New-Item -ItemType Directory -Force -Path target/release | Out-Null
+          Copy-Item target/x86_64-pc-windows-msvc/release/langhian.exe target/release/langhian.exe -Force
+          $iscc = "${env:ProgramFiles(x86)}\Inno Setup 6\ISCC.exe"
+          & $iscc "/DMyAppVersion=$version" packaging/windows/langhian.iss
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: release-windows
+          path: |
+            dist/langhian-windows-x86_64.zip
+            dist/langhian-setup-windows-x86_64.exe
+
+  build-macos:
+    name: macOS (${{ matrix.name }})
+    runs-on: macos-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - name: arm64
+            target: aarch64-apple-darwin
+          - name: x86_64
+            target: x86_64-apple-darwin
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: ${{ matrix.target }}
+      - uses: Swatinem/rust-cache@v2
+
+      - name: Build Release Binary
+        run: cargo build --release --target ${{ matrix.target }} -p langhian-app
+
+      - name: Package .app and .dmg
+        run: |
+          mkdir -p dist/dmg/Langhian.app/Contents/MacOS
+          mkdir -p dist/dmg/Langhian.app/Contents/Resources
+          cp target/${{ matrix.target }}/release/langhian dist/dmg/Langhian.app/Contents/MacOS/langhian
+          chmod +x dist/dmg/Langhian.app/Contents/MacOS/langhian
+          cp packaging/macos/Info.plist dist/dmg/Langhian.app/Contents/Info.plist
+
+          mkdir -p AppIcon.iconset
+          sips -z 16 16     assets/icons/langhian.png --out AppIcon.iconset/icon_16x16.png
+          sips -z 32 32     assets/icons/langhian.png --out AppIcon.iconset/icon_16x16@2x.png
+          sips -z 32 32     assets/icons/langhian.png --out AppIcon.iconset/icon_32x32.png
+          sips -z 64 64     assets/icons/langhian.png --out AppIcon.iconset/icon_32x32@2x.png
+          sips -z 128 128   assets/icons/langhian.png --out AppIcon.iconset/icon_128x128.png
+          sips -z 256 256   assets/icons/langhian.png --out AppIcon.iconset/icon_128x128@2x.png
+          sips -z 256 256   assets/icons/langhian.png --out AppIcon.iconset/icon_256x256.png
+          iconutil -c icns AppIcon.iconset -o dist/dmg/Langhian.app/Contents/Resources/AppIcon.icns
+
+          ln -s /Applications dist/dmg/Applications
+          hdiutil create -volname "Langhian Translation" -srcfolder dist/dmg -ov -format UDZO "dist/langhian-macos-${{ matrix.name }}.dmg"
+          tar -czf "dist/langhian-macos-${{ matrix.name }}.tar.gz" -C dist/dmg Langhian.app
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: release-macos-${{ matrix.name }}
+          path: |
+            dist/langhian-macos-${{ matrix.name }}.dmg
+            dist/langhian-macos-${{ matrix.name }}.tar.gz
+
+  build-linux:
+    name: Linux x86_64
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Install Linux Dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y \
+            build-essential \
+            pkg-config \
+            libssl-dev \
+            libgtk-3-dev \
+            libayatana-appindicator3-dev \
+            libxcb1-dev \
+            libxcb-render0-dev \
+            libxcb-shape0-dev \
+            libxcb-xfixes0-dev \
+            libx11-dev \
+            libxdo-dev \
+            libxtst-dev \
+            libxi-dev \
+            libxkbcommon-dev \
+            libwayland-dev \
+            libpipewire-0.3-dev \
+            libdbus-1-dev
+
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2
+
+      - name: Build Release Binary
+        run: cargo build --release -p langhian-app
+
+      - name: Package .tar.gz and .deb
+        run: |
+          VERSION="${GITHUB_REF_NAME#v}"
+          if [ -z "$VERSION" ] || [ "$VERSION" = "main" ]; then VERSION="0.1.0"; fi
+
+          mkdir -p dist/tar
+          cp target/release/langhian dist/tar/langhian
+          cp packaging/linux/langhian.desktop dist/tar/
+          cp assets/icons/langhian.png dist/tar/
+          cp README.md LICENSE THIRD_PARTY_LICENSES.md dist/tar/
+          tar -czf dist/langhian-linux-x86_64.tar.gz -C dist/tar .
+
+          mkdir -p dist/deb/DEBIAN
+          mkdir -p dist/deb/usr/bin
+          mkdir -p dist/deb/usr/share/applications
+          mkdir -p dist/deb/usr/share/icons/hicolor/256x256/apps
+
+          cp target/release/langhian dist/deb/usr/bin/langhian
+          chmod 755 dist/deb/usr/bin/langhian
+          cp packaging/linux/langhian.desktop dist/deb/usr/share/applications/langhian.desktop
+          cp assets/icons/langhian.png dist/deb/usr/share/icons/hicolor/256x256/apps/langhian.png
+
+          printf '%s\n' \
+            "Package: langhian" \
+            "Version: ${VERSION}" \
+            "Section: utils" \
+            "Priority: optional" \
+            "Architecture: amd64" \
+            "Maintainer: Hamid Eslami <hamideslami540@gmail.com>" \
+            "Depends: libc6, libgtk-3-0, libayatana-appindicator3-1 | libappindicator3-1, libxdo3, libx11-6" \
+            "Description: Lightweight pure-Rust AI and Google Translate desktop translator" \
+            > dist/deb/DEBIAN/control
+
+          dpkg-deb --build dist/deb dist/langhian-linux-amd64.deb
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: release-linux
+          path: |
+            dist/langhian-linux-x86_64.tar.gz
+            dist/langhian-linux-amd64.deb
+
+  publish:
+    name: Publish GitHub Release
+    needs: [build-windows, build-macos, build-linux]
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/download-artifact@v4
+        with:
+          path: artifacts
+          merge-multiple: true
+
+      - name: Generate Checksums
+        run: |
+          cd artifacts
+          sha256sum * > checksums.txt
+
+      - name: Determine Tag
+        id: tag
+        run: |
+          if [[ "${{ github.ref }}" == refs/tags/* ]]; then
+            echo "name=${GITHUB_REF_NAME}" >> "$GITHUB_OUTPUT"
+          else
+            echo "name=${{ github.event.inputs.tag || 'v0.1.0' }}" >> "$GITHUB_OUTPUT"
+          fi
+
+      - name: Publish Release
+        uses: softprops/action-gh-release@v2
+        with:
+          tag_name: ${{ steps.tag.outputs.name }}
+          name: "Langhian Translation ${{ steps.tag.outputs.name }}"
+          generate_release_notes: true
+          files: artifacts/*
