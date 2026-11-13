@@ -2,7 +2,7 @@ use crate::ui::icons::{UiIcon, app_logo, ui_icon};
 use crate::ui::theme::{
     FramelessShellKind, aligned_text, badge_style, card_style, elevated_box_style, font_for_text,
     font_for_ui, ghost_button_style, has_rich_markdown, palette_for, pill_button_style,
-    primary_button_style, render_markdown_with_highlights, rtl_row, sleek_editor_style,
+    primary_button_style, render_markdown_with_highlights, rtl_row, seamless_editor_style,
     sleek_scrollable, square_icon_button, window_close_button_style, wrap_frameless_resize_frame,
 };
 use iced::font::Weight;
@@ -272,9 +272,9 @@ pub fn view_modal<'a>(
                     .on_action(ModalMsg::EditSourceAction)
                     .font(src_font)
                     .size(13.5)
-                    .padding([10, 12])
+                    .padding([8, 12])
                     .height(Length::Fill)
-                    .style(sleek_editor_style(mode)),
+                    .style(seamless_editor_style(mode)),
             ]
             .spacing(6)
             .height(Length::Fill),
@@ -479,9 +479,9 @@ pub fn view_modal<'a>(
             .on_action(ModalMsg::EditOutputAction)
             .font(out_font)
             .size(14.5)
-            .padding([10, 12])
+            .padding([8, 12])
             .height(Length::Fill)
-            .style(sleek_editor_style(mode));
+            .style(seamless_editor_style(mode));
 
         let mut seen_ids: HashSet<String> = HashSet::new();
         let mut matched_chips: Vec<Element<'a, ModalMsg>> = Vec::new();
