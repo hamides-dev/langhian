@@ -15,12 +15,15 @@ path = "src/main.rs"
 langhian-core = { path = "../langhian-core" }
 arboard = { version = "3.7", features = ["wayland-data-control"] }
 chrono = { version = "0.4", features = ["serde"] }
+cosmic-text = "0.15"
 enigo = "0.3"
 iced = { version = "0.14", features = ["tokio", "image", "advanced", "canvas", "svg", "tiny-skia"] }
 image = { version = "0.25", default-features = false, features = ["png"] }
 open = "5"
+rodio = { version = "0.21", default-features = false, features = ["playback", "hound", "minimp3"] }
 tokio = { version = "1", features = ["rt-multi-thread", "macros", "sync", "time", "fs", "io-util"] }
 tray-icon = "0.21"
+unicode-segmentation = "1.12"
 xcap = "0.9"
 
 [target.'cfg(target_os = "windows")'.dependencies]

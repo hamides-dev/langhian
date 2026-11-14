@@ -72,6 +72,9 @@ const ICON_SWAP_HORIZ: &[u8] = include_bytes!("../../../../assets/icons/ui/swap_
 const ICON_TRANSLATE: &[u8] = include_bytes!("../../../../assets/icons/ui/translate.svg");
 const ICON_TUNE: &[u8] = include_bytes!("../../../../assets/icons/ui/tune.svg");
 const ICON_VISIBILITY: &[u8] = include_bytes!("../../../../assets/icons/ui/visibility.svg");
+const ICON_VOLUME_UP: &[u8] = include_bytes!("../../../../assets/icons/ui/volume_up.svg");
+const ICON_PLAY_ARROW: &[u8] = include_bytes!("../../../../assets/icons/ui/play_arrow.svg");
+const ICON_STOP: &[u8] = include_bytes!("../../../../assets/icons/ui/stop.svg");
 const ICON_WAND_STARS: &[u8] = include_bytes!("../../../../assets/icons/ui/wand_stars.svg");
 
 // Embedded Provider Brand SVGs
@@ -113,6 +116,7 @@ pub enum UiIcon {
     LightMode,
     MenuBook,
     Payments,
+    PlayArrow,
     Psychology,
     Refresh,
     Remove,
@@ -124,10 +128,12 @@ pub enum UiIcon {
     Star,
     StarFill,
     StarShine,
+    Stop,
     SwapHoriz,
     Translate,
     Tune,
     Visibility,
+    VolumeUp,
     WandStars,
 }
 
@@ -160,6 +166,7 @@ impl UiIcon {
             Self::LightMode => ICON_LIGHT_MODE,
             Self::MenuBook => ICON_MENU_BOOK,
             Self::Payments => ICON_PAYMENTS,
+            Self::PlayArrow => ICON_PLAY_ARROW,
             Self::Psychology => ICON_PSYCHOLOGY,
             Self::Refresh => ICON_REFRESH,
             Self::Remove => ICON_REMOVE,
@@ -171,10 +178,12 @@ impl UiIcon {
             Self::Star => ICON_STAR,
             Self::StarFill => ICON_STAR_FILL,
             Self::StarShine => ICON_STAR_SHINE,
+            Self::Stop => ICON_STOP,
             Self::SwapHoriz => ICON_SWAP_HORIZ,
             Self::Translate => ICON_TRANSLATE,
             Self::Tune => ICON_TUNE,
             Self::Visibility => ICON_VISIBILITY,
+            Self::VolumeUp => ICON_VOLUME_UP,
             Self::WandStars => ICON_WAND_STARS,
         }
     }

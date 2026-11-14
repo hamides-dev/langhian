@@ -1,5 +1,6 @@
 use crate::ui::icons::{ProviderLogoKind, UiIcon, app_logo, provider_logo, ui_icon};
 use crate::ui::onboarding::{OnboardingState, view_onboarding};
+use crate::ui::rtl_editor::{self, rtl_editor};
 use crate::ui::theme::{
     FramelessShellKind, ThemePalette, aligned_text, badge_style, card_style, danger_button_style,
     elevated_box_style, font_for_text, font_for_ui, ghost_button_style, hairline_divider,
@@ -13,14 +14,15 @@ use crate::ui::theme::{
 use iced::font::Weight;
 use iced::widget::text::Shaping;
 use iced::widget::{
-    Space, button, column, container, mouse_area, pick_list, text, text_editor, text_input, toggler,
+    Space, button, column, container, mouse_area, pick_list, text, text_input, toggler,
 };
 use iced::window;
 use iced::{Alignment, Background, Border, Color, Element, Font, Length, Padding};
 use langhian_core::{
     AppConfig, CapabilitySource, HistoryEntry, ModelCatalogEntry, ModelProfile, PromptPreset,
-    ProviderKind, TranslationMode, Translator, UiThemeMode, UpdateCheckResult, VocabEntry,
-    VocabMatcher, find_vocab_match_index, language_display_name, supported_languages,
+    ProviderKind, SpeechAudio, TranslationMode, Translator, UiThemeMode, UpdateCheckResult,
+    VocabEntry, VocabMatcher, curated_voices_for_profile, find_vocab_match_index,
+    is_dedicated_tts_model, language_display_name, supported_languages,
 };
 use std::fmt;
 
@@ -43,7 +45,7 @@ pub enum SettingsSubTab {
     Updates,
 }
 
-#[derive(Debug, Clone)]
+#[derive(Debug)]
 pub struct ModelEditorState {
     pub editing_id: Option<String>,
     pub name: String,
@@ -52,15 +54,18 @@ pub struct ModelEditorState {
     pub model_id: String,
     pub api_key: String,
     pub headers_raw: String,
-    pub headers_editor: text_editor::Content,
+    pub headers_editor: rtl_editor::Content,
     pub temperature: String,
     pub max_tokens: String,
     pub supports_vision: bool,
     pub vision_source: CapabilitySource,
+    pub supports_audio: bool,
+    pub audio_source: CapabilitySource,
     pub is_probing: bool,
     pub probe_status: Option<(bool, String)>,
     pub fetched_catalog: Vec<ModelCatalogEntry>,
     pub catalog_filter: String,
+    pub catalog_audio_only: bool,
     pub selected_catalog_idx: Option<usize>,
 }
 
@@ -72,7 +77,7 @@ impl ModelEditorState {
             .map(|(k, v)| format!("{k}: {v}"))
             .collect::<Vec<_>>()
             .join("\n");
-        let headers_editor = text_editor::Content::with_text(&headers_raw);
+        let headers_editor = rtl_editor::Content::with_text(&headers_raw);
         Self {
             editing_id: if is_new {
                 None
@@ -93,22 +98,25 @@ impl ModelEditorState {
                 .unwrap_or_default(),
             supports_vision: profile.supports_vision,
             vision_source: profile.vision_source,
+            supports_audio: profile.supports_audio_output(),
+            audio_source: profile.audio_source,
             is_probing: false,
             probe_status: None,
             fetched_catalog: Vec::new(),
             catalog_filter: String::new(),
+            catalog_audio_only: false,
             selected_catalog_idx: None,
         }
     }
 }
 
-#[derive(Debug, Clone)]
+#[derive(Debug)]
 pub struct PromptEditorState {
     pub editing_id: Option<String>,
     pub name: String,
-    pub system_editor: text_editor::Content,
-    pub user_template_editor: text_editor::Content,
-    pub vision_editor: text_editor::Content,
+    pub system_editor: rtl_editor::Content,
+    pub user_template_editor: rtl_editor::Content,
+    pub vision_editor: rtl_editor::Content,
     pub shortcut_slot: Option<u8>,
 }
 
@@ -121,15 +129,15 @@ impl PromptEditorState {
                 Some(preset.id.clone())
             },
             name: preset.name.clone(),
-            system_editor: text_editor::Content::with_text(&preset.system_prompt),
-            user_template_editor: text_editor::Content::with_text(&preset.user_template),
-            vision_editor: text_editor::Content::with_text(&preset.vision_instruction),
+            system_editor: rtl_editor::Content::with_text(&preset.system_prompt),
+            user_template_editor: rtl_editor::Content::with_text(&preset.user_template),
+            vision_editor: rtl_editor::Content::with_text(&preset.vision_instruction),
             shortcut_slot: preset.shortcut_slot,
         }
     }
 }
 
-#[derive(Debug, Clone)]
+#[derive(Debug)]
 pub struct DashboardState {
     pub active_tab: DashboardTab,
     pub settings_subtab: SettingsSubTab,
@@ -139,8 +147,11 @@ pub struct DashboardState {
     pub titlebar_close_hovered: bool,
 
     // Manual Translate tab
-    pub source_editor: text_editor::Content,
+    pub source_editor: rtl_editor::Content,
     pub manual_output: String,
+    pub manual_voice_audio: Option<SpeechAudio>,
+    pub manual_voice_playing: bool,
+    pub manual_voice_used: Option<String>,
     pub is_translating: bool,
     pub translate_error: Option<String>,
     pub manual_auto_reversed: bool,
@@ -150,7 +161,7 @@ pub struct DashboardState {
     pub show_save_vocab_box: bool,
     pub save_term: String,
     pub save_translation: String,
-    pub save_notes_editor: text_editor::Content,
+    pub save_notes_editor: rtl_editor::Content,
     pub selected_vocab_preview: Option<VocabEntry>,
 
     // Models & Prompts
@@ -163,7 +174,7 @@ pub struct DashboardState {
     pub show_add_vocab_form: bool,
     pub new_vocab_term: String,
     pub new_vocab_translation: String,
-    pub new_vocab_notes_editor: text_editor::Content,
+    pub new_vocab_notes_editor: rtl_editor::Content,
     pub export_status: Option<String>,
 
     // Settings buffers (saved automatically on valid change)
@@ -172,6 +183,7 @@ pub struct DashboardState {
     pub hotkey_prev_prompt: String,
     pub hotkey_dashboard: String,
     pub double_tap_ms_input: String,
+    pub voice_testing: bool,
     pub settings_error: Option<String>,
     pub settings_toast: Option<String>,
 
@@ -191,8 +203,11 @@ impl DashboardState {
             onboarding: OnboardingState::default(),
             is_maximized: false,
             titlebar_close_hovered: false,
-            source_editor: text_editor::Content::new(),
+            source_editor: rtl_editor::Content::new(),
             manual_output: String::new(),
+            manual_voice_audio: None,
+            manual_voice_playing: false,
+            manual_voice_used: None,
             is_translating: false,
             translate_error: None,
             manual_auto_reversed: false,
@@ -202,7 +217,7 @@ impl DashboardState {
             show_save_vocab_box: false,
             save_term: String::new(),
             save_translation: String::new(),
-            save_notes_editor: text_editor::Content::new(),
+            save_notes_editor: rtl_editor::Content::new(),
             selected_vocab_preview: None,
             selected_preset_kind: None,
             model_editor: None,
@@ -211,13 +226,14 @@ impl DashboardState {
             show_add_vocab_form: false,
             new_vocab_term: String::new(),
             new_vocab_translation: String::new(),
-            new_vocab_notes_editor: text_editor::Content::new(),
+            new_vocab_notes_editor: rtl_editor::Content::new(),
             export_status: None,
             hotkey_screenshot: config.shortcuts.screenshot.format_display(),
             hotkey_next_prompt: config.shortcuts.next_prompt.format_display(),
             hotkey_prev_prompt: config.shortcuts.prev_prompt.format_display(),
             hotkey_dashboard: config.shortcuts.open_dashboard.format_display(),
             double_tap_ms_input: config.shortcuts.double_tap_ms.to_string(),
+            voice_testing: false,
             settings_error: None,
             settings_toast: None,
             update_checking: false,
@@ -310,7 +326,7 @@ pub enum DashboardMsg {
     SwitchSettingsSubTab(SettingsSubTab),
 
     // Manual Translate tab
-    SourceEditorAction(text_editor::Action),
+    SourceEditorAction(rtl_editor::Action),
     SelectSourceLang(String),
     SelectNativeLang(String),
     SelectTargetLang(String),
@@ -318,6 +334,8 @@ pub enum DashboardMsg {
     SelectModel(String),
     SelectPrompt(String),
     RunManualTranslate,
+    PlayManualVoice,
+    StopManualVoice,
     TriggerScreenshot,
     ClearManual,
     CopyManualResult,
@@ -325,7 +343,7 @@ pub enum DashboardMsg {
     ToggleSaveManualBox,
     SaveManualTermChanged(String),
     SaveManualTranslationChanged(String),
-    SaveManualNotesAction(text_editor::Action),
+    SaveManualNotesAction(rtl_editor::Action),
     ConfirmSaveManualVocab,
     ClickVocabHighlight(VocabEntry),
     DismissVocabPreview,
@@ -341,11 +359,13 @@ pub enum DashboardMsg {
     ModelBaseUrlChanged(String),
     ModelIdChanged(String),
     ModelApiKeyChanged(String),
-    ModelHeadersAction(text_editor::Action),
+    ModelHeadersAction(rtl_editor::Action),
     ModelTempChanged(String),
     ModelMaxTokensChanged(String),
     ModelVisionToggled(bool),
+    ToggleModelAudio(bool),
     ModelCatalogFilterChanged(String),
+    ToggleCatalogAudioOnly,
     PickCatalogModel(usize),
     TestModelConnection,
     FetchProviderModels,
@@ -359,9 +379,9 @@ pub enum DashboardMsg {
     CancelEditPrompt,
     PromptNameChanged(String),
     PromptSlotChanged(Option<u8>),
-    PromptSystemAction(text_editor::Action),
-    PromptUserTemplateAction(text_editor::Action),
-    PromptVisionAction(text_editor::Action),
+    PromptSystemAction(rtl_editor::Action),
+    PromptUserTemplateAction(rtl_editor::Action),
+    PromptVisionAction(rtl_editor::Action),
     SavePromptPreset,
 
     // Vocabulary tab
@@ -369,7 +389,7 @@ pub enum DashboardMsg {
     ToggleAddVocabForm,
     NewVocabTermChanged(String),
     NewVocabTranslationChanged(String),
-    NewVocabNotesAction(text_editor::Action),
+    NewVocabNotesAction(rtl_editor::Action),
     ConfirmAddVocab,
     DeleteVocab(String),
     ExportVocabJson,
@@ -395,6 +415,10 @@ pub enum DashboardMsg {
     ToggleLaunchStartup(bool),
     ToggleShowHud(bool),
     TogglePreserveMarkdown(bool),
+    ToggleVoiceTranslation(bool),
+    SelectVoiceModel(Option<String>),
+    SelectVoiceName(String),
+    TestVoicePreview,
     ToggleAutoCheckUpdates(bool),
     ResetModalPosition,
     CheckUpdatesNow,
@@ -808,22 +832,57 @@ fn view_translate_tab<'a>(
         .find(|l| l.id == config.target_language)
         .cloned();
 
+    let has_non_tts_models = config
+        .models
+        .iter()
+        .any(|m| !is_dedicated_tts_model(m.provider, &m.model_id));
+
     let model_opts: Vec<PickerItem> = config
         .models
         .iter()
-        .map(|m| PickerItem {
-            id: m.id.clone(),
-            label: if m.supports_vision {
-                format!("{} · Vision", m.name)
-            } else {
-                m.name.clone()
-            },
+        .filter(|m| {
+            !has_non_tts_models
+                || !is_dedicated_tts_model(m.provider, &m.model_id)
+                || m.id == config.active_model_id
+        })
+        .map(|m| {
+            let mut tags = Vec::new();
+            if m.supports_vision {
+                tags.push("Vision");
+            }
+            if m.supports_audio_output() {
+                tags.push("Audio");
+            }
+            PickerItem {
+                id: m.id.clone(),
+                label: if tags.is_empty() {
+                    m.name.clone()
+                } else {
+                    format!("{} · {}", m.name, tags.join(", "))
+                },
+            }
         })
         .collect();
     let sel_model = model_opts
         .iter()
         .find(|m| m.id == config.active_model_id)
         .cloned();
+
+    let mut voice_opts = vec![PickerItem {
+        id: "__auto__".to_string(),
+        label: i18n.t("settings.voice_auto_from_active"),
+    }];
+    for m in config.models.iter().filter(|m| m.supports_audio_output()) {
+        voice_opts.push(PickerItem {
+            id: m.id.clone(),
+            label: m.name.clone(),
+        });
+    }
+    let sel_voice_model = config
+        .active_voice_model_id
+        .as_deref()
+        .and_then(|vid| voice_opts.iter().find(|v| v.id == vid).cloned())
+        .or_else(|| voice_opts.first().cloned());
 
     let prompt_opts: Vec<PickerItem> = config
         .prompts
@@ -886,7 +945,7 @@ fn view_translate_tab<'a>(
             rtl_row(
                 is_rtl,
                 vec![
-                    text(i18n.t("tray.active_model"))
+                    text(i18n.t("translate.text_model_label"))
                         .size(11.5)
                         .font(ui_font_semi)
                         .color(p.text_muted)
@@ -901,7 +960,32 @@ fn view_translate_tab<'a>(
                         .into(),
                 ],
             )
-            .spacing(8)
+            .spacing(6)
+            .align_y(Alignment::Center)
+            .width(Length::FillPortion(3))
+            .into(),
+            rtl_row(
+                is_rtl,
+                vec![
+                    text(i18n.t("translate.voice_model_label"))
+                        .size(11.5)
+                        .font(ui_font_semi)
+                        .color(p.text_muted)
+                        .into(),
+                    pick_list(voice_opts, sel_voice_model, |x| {
+                        let id = if x.id == "__auto__" { None } else { Some(x.id) };
+                        DashboardMsg::SelectVoiceModel(id)
+                    })
+                    .font(ui_font)
+                    .text_size(12)
+                    .padding([6, 10])
+                    .width(Length::Fill)
+                    .style(sleek_pick_list_style(mode))
+                    .menu_style(sleek_menu_style(mode))
+                    .into(),
+                ],
+            )
+            .spacing(6)
             .align_y(Alignment::Center)
             .width(Length::FillPortion(3))
             .into(),
@@ -925,13 +1009,13 @@ fn view_translate_tab<'a>(
                     .into(),
                 ],
             )
-            .spacing(8)
+            .spacing(6)
             .align_y(Alignment::Center)
             .width(Length::FillPortion(2))
             .into(),
         ],
     )
-    .spacing(12)
+    .spacing(10)
     .align_y(Alignment::Center);
 
     let control_card = container(column![
@@ -980,7 +1064,7 @@ fn view_translate_tab<'a>(
                 Some(p.text_secondary),
                 is_rtl,
             ),
-            text_editor(&state.source_editor)
+            rtl_editor(&state.source_editor)
                 .placeholder(i18n.t("translate.source_placeholder"))
                 .on_action(DashboardMsg::SourceEditorAction)
                 .font(font_for_text(
@@ -1057,44 +1141,93 @@ fn view_translate_tab<'a>(
         )
     };
 
+    let mut out_header_items: Vec<Element<'a, DashboardMsg>> = vec![
+        aligned_text(
+            i18n.t("translate.target_label"),
+            12.0,
+            ui_font_semi,
+            Some(p.text_secondary),
+            is_rtl,
+        ),
+        container(text(dir_badge_label).size(11).font(ui_font_semi).color(
+            if state.manual_auto_reversed {
+                p.success
+            } else {
+                p.accent_text
+            },
+        ))
+        .padding([2, 8])
+        .style(badge_style(
+            if state.manual_auto_reversed {
+                p.success_soft
+            } else {
+                p.accent_soft
+            },
+            if state.manual_auto_reversed {
+                p.success
+            } else {
+                p.accent_text
+            },
+            p.border_subtle,
+        ))
+        .into(),
+        Space::new().width(Length::Fill).into(),
+    ];
+
+    if state.manual_voice_audio.is_some() {
+        out_header_items.push(
+            button(
+                rtl_row(
+                    is_rtl,
+                    vec![
+                        ui_icon(
+                            if state.manual_voice_playing {
+                                UiIcon::Stop
+                            } else {
+                                UiIcon::PlayArrow
+                            },
+                            13.0,
+                            if state.manual_voice_playing {
+                                p.accent_text
+                            } else {
+                                p.text_primary
+                            },
+                        )
+                        .into(),
+                        text(if state.manual_voice_playing {
+                            i18n.t("translate.stop_audio")
+                        } else {
+                            i18n.t("translate.play_audio")
+                        })
+                        .size(11.5)
+                        .font(ui_font_semi)
+                        .color(if state.manual_voice_playing {
+                            p.accent_text
+                        } else {
+                            p.text_primary
+                        })
+                        .into(),
+                    ],
+                )
+                .spacing(5)
+                .align_y(Alignment::Center),
+            )
+            .on_press(if state.manual_voice_playing {
+                DashboardMsg::StopManualVoice
+            } else {
+                DashboardMsg::PlayManualVoice
+            })
+            .padding([3, 9])
+            .style(ghost_button_style(mode, state.manual_voice_playing))
+            .into(),
+        );
+    }
+
     let output_pane = container(
         column![
-            rtl_row(
-                is_rtl,
-                vec![
-                    aligned_text(
-                        i18n.t("translate.target_label"),
-                        12.0,
-                        ui_font_semi,
-                        Some(p.text_secondary),
-                        is_rtl,
-                    ),
-                    container(text(dir_badge_label).size(11).font(ui_font_semi).color(
-                        if state.manual_auto_reversed {
-                            p.success
-                        } else {
-                            p.accent_text
-                        }
-                    ),)
-                    .padding([2, 8])
-                    .style(badge_style(
-                        if state.manual_auto_reversed {
-                            p.success_soft
-                        } else {
-                            p.accent_soft
-                        },
-                        if state.manual_auto_reversed {
-                            p.success
-                        } else {
-                            p.accent_text
-                        },
-                        p.border_subtle,
-                    ))
-                    .into(),
-                ],
-            )
-            .spacing(8)
-            .align_y(Alignment::Center),
+            rtl_row(is_rtl, out_header_items)
+                .spacing(8)
+                .align_y(Alignment::Center),
             container(output_body)
                 .padding(12)
                 .width(Length::Fill)
@@ -1201,7 +1334,7 @@ fn view_translate_tab<'a>(
                         ],
                     )
                     .spacing(8),
-                    text_editor(&state.save_notes_editor)
+                    rtl_editor(&state.save_notes_editor)
                         .placeholder(i18n.t("vocab.notes_placeholder"))
                         .on_action(DashboardMsg::SaveManualNotesAction)
                         .font(ui_font)
@@ -1517,12 +1650,19 @@ fn view_models_tab<'a>(
         ));
     }
 
+    let has_non_tts_models = config
+        .models
+        .iter()
+        .any(|m| !is_dedicated_tts_model(m.provider, &m.model_id));
+
     let mut rows_col = column![];
     for (idx, m) in config.models.iter().enumerate() {
         if idx > 0 {
             rows_col = rows_col.push(hairline_divider(mode));
         }
-        let is_active = m.id == config.active_model_id;
+        let is_active_text = m.id == config.active_model_id;
+        let is_active_voice = config.active_voice_model_id.as_deref() == Some(m.id.as_str());
+        let is_tts_only = is_dedicated_tts_model(m.provider, &m.model_id);
         let logo_kind = ProviderLogoKind::from_profile(m.provider, &m.base_url, &m.name);
         let cap_label = if m.supports_vision {
             i18n.t("models.vision_badge")
@@ -1566,10 +1706,23 @@ fn view_models_tab<'a>(
         .spacing(8)
         .align_y(Alignment::Center);
 
-        if is_active {
+        if m.supports_audio_output() {
             badges = badges.push(
                 container(
-                    text(i18n.t("models.active_badge"))
+                    text(i18n.t("models.audio_badge"))
+                        .size(10)
+                        .font(ui_font_semi)
+                        .color(p.accent_text),
+                )
+                .padding([2, 7])
+                .style(badge_style(p.accent_soft, p.accent_text, p.border_subtle)),
+            );
+        }
+
+        if is_active_text {
+            badges = badges.push(
+                container(
+                    text(i18n.t("models.active_text_badge"))
                         .size(10)
                         .font(ui_font_semi)
                         .color(p.success),
@@ -1583,6 +1736,19 @@ fn view_models_tab<'a>(
             );
         }
 
+        if is_active_voice {
+            badges = badges.push(
+                container(
+                    text(i18n.t("models.active_voice_badge"))
+                        .size(10)
+                        .font(ui_font_semi)
+                        .color(p.accent_text),
+                )
+                .padding([2, 7])
+                .style(badge_style(p.accent_soft, p.accent_text, p.border_focus)),
+            );
+        }
+
         let sub = format!("{}  ·  {}", m.model_id, m.base_url);
         let left_col = column![
             badges,
@@ -1593,10 +1759,10 @@ fn view_models_tab<'a>(
         .width(Length::Fill);
 
         let mut action_items: Vec<Element<'a, DashboardMsg>> = Vec::new();
-        if !is_active {
+        if !is_active_text && (!is_tts_only || !has_non_tts_models) {
             action_items.push(
                 button(
-                    text(i18n.t("models.set_active"))
+                    text(i18n.t("models.set_active_text"))
                         .size(11.5)
                         .font(ui_font_semi)
                         .color(Color::WHITE),
@@ -1604,6 +1770,20 @@ fn view_models_tab<'a>(
                 .on_press(DashboardMsg::SelectModel(m.id.clone()))
                 .padding([6, 12])
                 .style(primary_button_style(mode))
+                .into(),
+            );
+        }
+        if m.supports_audio_output() && !is_active_voice {
+            action_items.push(
+                button(
+                    text(i18n.t("models.set_active_voice"))
+                        .size(11.5)
+                        .font(ui_font_semi)
+                        .color(p.accent_text),
+                )
+                .on_press(DashboardMsg::SelectVoiceModel(Some(m.id.clone())))
+                .padding([6, 12])
+                .style(pill_button_style(mode))
                 .into(),
             );
         }
@@ -1832,6 +2012,9 @@ fn view_model_editor<'a>(
         let q = ed.catalog_filter.trim().to_lowercase();
         let mut rows = column![].spacing(4);
         for (idx, item) in ed.fetched_catalog.iter().enumerate() {
+            if ed.catalog_audio_only && item.supports_audio != Some(true) {
+                continue;
+            }
             if !q.is_empty()
                 && !item.id.to_lowercase().contains(&q)
                 && !item.display_name.to_lowercase().contains(&q)
@@ -1888,6 +2071,19 @@ fn view_model_editor<'a>(
                     .into(),
                 );
             }
+            if item.supports_audio == Some(true) {
+                row_items.push(
+                    container(
+                        text(i18n.t("models.audio_badge"))
+                            .size(10.5)
+                            .font(ui_font_semi)
+                            .color(p.accent_text),
+                    )
+                    .padding([2, 7])
+                    .style(badge_style(p.accent_soft, p.accent_text, p.border_subtle))
+                    .into(),
+                );
+            }
             row_items.push(
                 container(
                     rtl_row(
@@ -1933,6 +2129,38 @@ fn view_model_editor<'a>(
                         .color(p.accent_text)
                         .width(Length::Fill)
                         .into(),
+                    button(
+                        rtl_row(
+                            is_rtl,
+                            vec![
+                                ui_icon(
+                                    UiIcon::VolumeUp,
+                                    13.0,
+                                    if ed.catalog_audio_only {
+                                        p.accent_text
+                                    } else {
+                                        p.text_secondary
+                                    },
+                                )
+                                .into(),
+                                text(i18n.t("models.filter_audio_only"))
+                                    .size(11)
+                                    .font(ui_font_semi)
+                                    .color(if ed.catalog_audio_only {
+                                        p.accent_text
+                                    } else {
+                                        p.text_secondary
+                                    })
+                                    .into(),
+                            ],
+                        )
+                        .spacing(5)
+                        .align_y(Alignment::Center),
+                    )
+                    .on_press(DashboardMsg::ToggleCatalogAudioOnly)
+                    .padding([4, 9])
+                    .style(ghost_button_style(mode, ed.catalog_audio_only))
+                    .into(),
                     text(i18n.t("models.pricing_in_out"))
                         .size(11)
                         .font(ui_font)
@@ -1940,6 +2168,7 @@ fn view_model_editor<'a>(
                         .into(),
                 ],
             )
+            .spacing(8)
             .align_y(Alignment::Center),
             text_input(
                 &i18n.t("models.search_models_placeholder"),
@@ -2035,7 +2264,7 @@ fn view_model_editor<'a>(
         .spacing(10),
         column![
             field_lbl(i18n.t("models.custom_headers_label")),
-            text_editor(&ed.headers_editor)
+            rtl_editor(&ed.headers_editor)
                 .on_action(DashboardMsg::ModelHeadersAction)
                 .font(Font::MONOSPACE)
                 .size(12.5)
@@ -2054,6 +2283,25 @@ fn view_model_editor<'a>(
                     .into(),
                 aligned_text(
                     i18n.t("models.supports_vision_label"),
+                    12.5,
+                    ui_font,
+                    Some(p.text_primary),
+                    is_rtl,
+                ),
+            ],
+        )
+        .spacing(10)
+        .align_y(Alignment::Center),
+        rtl_row(
+            is_rtl,
+            vec![
+                toggler(ed.supports_audio)
+                    .on_toggle(DashboardMsg::ToggleModelAudio)
+                    .size(19)
+                    .style(sleek_toggler_style(mode))
+                    .into(),
+                aligned_text(
+                    i18n.t("models.supports_audio_label"),
                     12.5,
                     ui_font,
                     Some(p.text_primary),
@@ -2268,7 +2516,7 @@ fn view_prompts_tab<'a>(
                     ),
                     column![
                         lbl(i18n.t("prompts.system_prompt_label")),
-                        text_editor(&ed.system_editor)
+                        rtl_editor(&ed.system_editor)
                             .on_action(DashboardMsg::PromptSystemAction)
                             .font(ui_font)
                             .size(13)
@@ -2279,7 +2527,7 @@ fn view_prompts_tab<'a>(
                     .spacing(5),
                     column![
                         lbl(i18n.t("prompts.user_template_label")),
-                        text_editor(&ed.user_template_editor)
+                        rtl_editor(&ed.user_template_editor)
                             .on_action(DashboardMsg::PromptUserTemplateAction)
                             .font(ui_font)
                             .size(13)
@@ -2290,7 +2538,7 @@ fn view_prompts_tab<'a>(
                     .spacing(5),
                     column![
                         lbl(i18n.t("prompts.vision_instruction_label")),
-                        text_editor(&ed.vision_editor)
+                        rtl_editor(&ed.vision_editor)
                             .on_action(DashboardMsg::PromptVisionAction)
                             .font(ui_font)
                             .size(13)
@@ -2614,7 +2862,7 @@ fn view_vocab_tab<'a>(
                         ],
                     )
                     .spacing(10),
-                    text_editor(&state.new_vocab_notes_editor)
+                    rtl_editor(&state.new_vocab_notes_editor)
                         .placeholder(i18n.t("vocab.notes_placeholder"))
                         .on_action(DashboardMsg::NewVocabNotesAction)
                         .font(ui_font)
@@ -3058,7 +3306,7 @@ fn view_settings_tab<'a>(
             view_settings_shortcuts(state, config, i18n, mode, p, is_rtl, ui_font, ui_font_semi)
         }
         SettingsSubTab::Translation => {
-            view_settings_translation(config, i18n, mode, is_rtl, ui_font, ui_font_semi)
+            view_settings_translation(state, config, i18n, mode, is_rtl, ui_font, ui_font_semi)
         }
         SettingsSubTab::Appearance => {
             view_settings_appearance(config, i18n, mode, is_rtl, ui_font, ui_font_bold)
@@ -3499,6 +3747,7 @@ fn view_settings_shortcuts<'a>(
 }
 
 fn view_settings_translation<'a>(
+    state: &'a DashboardState,
     config: &'a AppConfig,
     i18n: &'a Translator,
     mode: UiThemeMode,
@@ -3507,7 +3756,48 @@ fn view_settings_translation<'a>(
     ui_font_semi: Font,
 ) -> Element<'a, DashboardMsg> {
     let p = palette_for(mode);
-    container(column![
+    let has_non_tts_models = config
+        .models
+        .iter()
+        .any(|m| !is_dedicated_tts_model(m.provider, &m.model_id));
+    let text_model_opts: Vec<PickerItem> = config
+        .models
+        .iter()
+        .filter(|m| {
+            !has_non_tts_models
+                || !is_dedicated_tts_model(m.provider, &m.model_id)
+                || m.id == config.active_model_id
+        })
+        .map(|m| PickerItem {
+            id: m.id.clone(),
+            label: format!("{} ({})", m.name, m.model_id),
+        })
+        .collect();
+    let selected_text_model = text_model_opts
+        .iter()
+        .find(|item| item.id == config.active_model_id)
+        .cloned();
+
+    let core_card = container(column![
+        sleek_row(
+            mode,
+            is_rtl,
+            i18n.t("settings.text_model"),
+            Some(i18n.t("settings.text_model_desc")),
+            pick_list(text_model_opts, selected_text_model, |x| {
+                DashboardMsg::SelectModel(x.id)
+            })
+            .font(ui_font)
+            .text_size(12.5)
+            .padding([7, 12])
+            .width(Length::Fixed(240.0))
+            .style(sleek_pick_list_style(mode))
+            .menu_style(sleek_menu_style(mode))
+            .into(),
+            ui_font,
+            ui_font_semi,
+        ),
+        hairline_divider(mode),
         sleek_row(
             mode,
             is_rtl,
@@ -3564,8 +3854,181 @@ fn view_settings_translation<'a>(
         ),
     ])
     .width(Length::Fill)
-    .style(card_style(mode, 10.0))
-    .into()
+    .style(card_style(mode, 10.0));
+
+    let mut voice_model_opts = vec![PickerItem {
+        id: "__auto__".to_string(),
+        label: i18n.t("settings.voice_auto_from_active"),
+    }];
+    let audio_models: Vec<&ModelProfile> = config
+        .models
+        .iter()
+        .filter(|m| m.supports_audio_output())
+        .collect();
+    for m in &audio_models {
+        voice_model_opts.push(PickerItem {
+            id: m.id.clone(),
+            label: format!("{} ({})", m.name, m.model_id),
+        });
+    }
+    let selected_voice_model = config
+        .active_voice_model_id
+        .as_deref()
+        .and_then(|vid| voice_model_opts.iter().find(|item| item.id == vid).cloned())
+        .or_else(|| voice_model_opts.first().cloned());
+
+    let resolved_voice = config.resolved_voice_model();
+    let voice_profile_for_list = resolved_voice
+        .cloned()
+        .unwrap_or_else(ModelProfile::preset_gemini);
+    let speaker_opts: Vec<PickerItem> = curated_voices_for_profile(&voice_profile_for_list)
+        .into_iter()
+        .map(|v| PickerItem {
+            id: v.id.to_string(),
+            label: v.label.to_string(),
+        })
+        .collect();
+    let selected_speaker = speaker_opts
+        .iter()
+        .find(|s| s.id == config.voice_name)
+        .cloned()
+        .or_else(|| speaker_opts.first().cloned());
+
+    let mut test_btn = button(
+        rtl_row(
+            is_rtl,
+            vec![
+                ui_icon(UiIcon::PlayArrow, 14.0, p.text_primary).into(),
+                text(i18n.t("settings.voice_test_btn"))
+                    .size(12)
+                    .font(ui_font_semi)
+                    .into(),
+            ],
+        )
+        .spacing(6)
+        .align_y(Alignment::Center),
+    )
+    .padding([7, 14])
+    .style(pill_button_style(mode));
+    if !state.voice_testing && resolved_voice.is_some() {
+        test_btn = test_btn.on_press(DashboardMsg::TestVoicePreview);
+    }
+
+    let mut voice_rows = column![
+        sleek_row(
+            mode,
+            is_rtl,
+            i18n.t("settings.voice_translation"),
+            Some(i18n.t("settings.voice_translation_desc")),
+            toggler(config.voice_translation_enabled)
+                .on_toggle(DashboardMsg::ToggleVoiceTranslation)
+                .size(19)
+                .style(sleek_toggler_style(mode))
+                .into(),
+            ui_font,
+            ui_font_semi,
+        ),
+        hairline_divider(mode),
+        sleek_row(
+            mode,
+            is_rtl,
+            i18n.t("settings.voice_model"),
+            Some(i18n.t("settings.voice_model_desc")),
+            pick_list(voice_model_opts, selected_voice_model, |x| {
+                let id = if x.id == "__auto__" { None } else { Some(x.id) };
+                DashboardMsg::SelectVoiceModel(id)
+            })
+            .font(ui_font)
+            .text_size(12.5)
+            .padding([7, 12])
+            .width(Length::Fixed(240.0))
+            .style(sleek_pick_list_style(mode))
+            .menu_style(sleek_menu_style(mode))
+            .into(),
+            ui_font,
+            ui_font_semi,
+        ),
+        hairline_divider(mode),
+        sleek_row(
+            mode,
+            is_rtl,
+            i18n.t("settings.voice_speaker"),
+            Some(i18n.t("settings.voice_speaker_desc")),
+            rtl_row(
+                is_rtl,
+                vec![
+                    pick_list(speaker_opts, selected_speaker, |x| {
+                        DashboardMsg::SelectVoiceName(x.id)
+                    })
+                    .font(ui_font)
+                    .text_size(12.5)
+                    .padding([7, 12])
+                    .width(Length::Fixed(180.0))
+                    .style(sleek_pick_list_style(mode))
+                    .menu_style(sleek_menu_style(mode))
+                    .into(),
+                    test_btn.into(),
+                ],
+            )
+            .spacing(8)
+            .align_y(Alignment::Center)
+            .into(),
+            ui_font,
+            ui_font_semi,
+        ),
+    ];
+
+    if audio_models.is_empty() {
+        voice_rows = voice_rows.push(hairline_divider(mode)).push(
+            container(
+                rtl_row(
+                    is_rtl,
+                    vec![
+                        ui_icon(UiIcon::VolumeUp, 16.0, p.accent_text).into(),
+                        aligned_text(
+                            i18n.t("settings.voice_no_models_hint"),
+                            12.0,
+                            ui_font,
+                            Some(p.text_secondary),
+                            is_rtl,
+                        ),
+                        button(
+                            rtl_row(
+                                is_rtl,
+                                vec![
+                                    ui_icon(UiIcon::Add, 13.0, p.text_primary).into(),
+                                    text(i18n.t("models.add_profile"))
+                                        .size(11.5)
+                                        .font(ui_font_semi)
+                                        .into(),
+                                ],
+                            )
+                            .spacing(5)
+                            .align_y(Alignment::Center),
+                        )
+                        .on_press(DashboardMsg::SwitchTab(DashboardTab::Models))
+                        .padding([6, 12])
+                        .style(pill_button_style(mode))
+                        .into(),
+                    ],
+                )
+                .spacing(10)
+                .align_y(Alignment::Center),
+            )
+            .padding([12, 16])
+            .width(Length::Fill)
+            .style(elevated_box_style(mode, 8.0)),
+        );
+    }
+
+    let voice_card = container(voice_rows)
+        .width(Length::Fill)
+        .style(card_style(mode, 10.0));
+
+    column![core_card, voice_card]
+        .spacing(14)
+        .width(Length::Fill)
+        .into()
 }
 
 fn view_settings_appearance<'a>(
