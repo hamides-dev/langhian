@@ -32,6 +32,7 @@ PrivilegesRequired=lowest
 PrivilegesRequiredOverridesAllowed=dialog
 CloseApplications=yes
 RestartApplications=yes
+ChangesAssociations=yes
 AppMutex=LanghianTranslationSingleInstanceMutex
 
 [Languages]

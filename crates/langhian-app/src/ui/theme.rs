@@ -868,6 +868,27 @@ pub fn sleek_editor_style(
     }
 }
 
+/// Borderless, transparent `text_editor` style for editors embedded directly
+/// inside an outer `card_style` container so there is no nested box-in-box.
+pub fn seamless_editor_style(
+    mode: UiThemeMode,
+) -> impl Fn(&Theme, text_editor::Status) -> text_editor::Style {
+    move |_, _status| {
+        let p = palette_for(mode);
+        text_editor::Style {
+            background: Background::Color(Color::TRANSPARENT),
+            border: Border {
+                color: Color::TRANSPARENT,
+                width: 0.0,
+                radius: 0.0.into(),
+            },
+            placeholder: p.text_muted,
+            value: p.text_primary,
+            selection: p.accent_soft,
+        }
+    }
+}
+
 pub fn sleek_pick_list_style(
     mode: UiThemeMode,
 ) -> impl Fn(&Theme, pick_list::Status) -> pick_list::Style {

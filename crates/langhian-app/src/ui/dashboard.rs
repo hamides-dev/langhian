@@ -424,7 +424,6 @@ pub fn view_dashboard<'a>(
     } else {
         let sidebar = view_sidebar(
             state,
-            config,
             i18n,
             mode,
             p,
@@ -642,7 +641,6 @@ fn view_custom_titlebar<'a>(
 #[allow(clippy::too_many_arguments)]
 fn view_sidebar<'a>(
     state: &'a DashboardState,
-    config: &'a AppConfig,
     i18n: &'a Translator,
     mode: UiThemeMode,
     p: ThemePalette,
@@ -709,73 +707,9 @@ fn view_sidebar<'a>(
         nav_col = nav_col.push(btn);
     }
 
-    let active_model = config.active_model();
-    let active_prompt = config.active_prompt();
-    let logo_kind = ProviderLogoKind::from_profile(
-        active_model.provider,
-        &active_model.base_url,
-        &active_model.name,
-    );
-
-    let status_dot = container(Space::new().width(7).height(7)).style(move |_| container::Style {
-        background: Some(Background::Color(p.success)),
-        border: Border {
-            radius: 999.0.into(),
-            ..Default::default()
-        },
-        ..Default::default()
-    });
-
-    let footer = container(
-        column![
-            rtl_row(
-                is_rtl,
-                vec![
-                    provider_logo(logo_kind, 16.0, p.text_primary).into(),
-                    aligned_text(
-                        active_model.name.as_str(),
-                        12.0,
-                        font_for_text(&active_model.name, None, Weight::Medium),
-                        Some(p.text_primary),
-                        is_rtl,
-                    ),
-                ],
-            )
-            .spacing(8)
-            .align_y(Alignment::Center)
-            .width(Length::Fill),
-            aligned_text(
-                active_prompt.name.as_str(),
-                11.5,
-                font_for_text(&active_prompt.name, None, Weight::Normal),
-                Some(p.text_secondary),
-                is_rtl,
-            ),
-            Space::new().height(3),
-            rtl_row(
-                is_rtl,
-                vec![
-                    status_dot.into(),
-                    text(format!("v{}", env!("CARGO_PKG_VERSION")))
-                        .size(11)
-                        .font(ui_font)
-                        .color(p.text_muted)
-                        .into(),
-                ],
-            )
-            .spacing(6)
-            .align_y(Alignment::Center),
-        ]
-        .spacing(4)
-        .align_x(horizontal_for_dir(is_rtl)),
-    )
-    .padding(12)
-    .width(Length::Fill)
-    .style(card_style(mode, 10.0));
-
     let bottom_radius = if state.is_maximized { 0.0 } else { 11.0 };
 
-    container(column![nav_col, Space::new().height(Length::Fill), footer].height(Length::Fill))
+    container(column![nav_col, Space::new().height(Length::Fill)].height(Length::Fill))
         .width(Length::Fixed(220.0))
         .height(Length::Fill)
         .padding(Padding::from([16, 14]))
