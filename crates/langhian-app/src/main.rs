@@ -325,11 +325,15 @@ impl LanghianApp {
 
         if app.config.auto_check_updates {
             let updater = app.updater.clone();
+            let include_prereleases = app.config.include_prereleases;
             app.dashboard.update_checking = true;
             tasks.push(Task::perform(
                 async move {
                     updater
-                        .check_for_updates(env!("CARGO_PKG_VERSION"))
+                        .check_for_updates_with_channel(
+                            env!("CARGO_PKG_VERSION"),
+                            include_prereleases,
+                        )
                         .await
                         .map_err(|e| e.to_string())
                 },
@@ -2200,6 +2204,11 @@ impl LanghianApp {
                 let _ = self.storage.save_config(&self.config);
                 Task::none()
             }
+            DashboardMsg::ToggleIncludePrereleases(v) => {
+                self.config.include_prereleases = v;
+                let _ = self.storage.save_config(&self.config);
+                Task::none()
+            }
             DashboardMsg::ResetModalPosition => {
                 self.config.modal_position = None;
                 self.config.modal_size = None;
@@ -2211,10 +2220,14 @@ impl LanghianApp {
                 self.dashboard.update_checking = true;
                 self.dashboard.update_error = None;
                 let updater = self.updater.clone();
+                let include_prereleases = self.config.include_prereleases;
                 Task::perform(
                     async move {
                         updater
-                            .check_for_updates(env!("CARGO_PKG_VERSION"))
+                            .check_for_updates_with_channel(
+                                env!("CARGO_PKG_VERSION"),
+                                include_prereleases,
+                            )
                             .await
                             .map_err(|e| e.to_string())
                     },

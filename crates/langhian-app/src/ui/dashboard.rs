@@ -396,6 +396,7 @@ pub enum DashboardMsg {
     ToggleShowHud(bool),
     TogglePreserveMarkdown(bool),
     ToggleAutoCheckUpdates(bool),
+    ToggleIncludePrereleases(bool),
     ResetModalPosition,
     CheckUpdatesNow,
     DownloadAndInstallUpdate,
@@ -3720,6 +3721,20 @@ fn view_settings_updates<'a>(
             Some(i18n.t("hints.auto_update_desc")),
             toggler(config.auto_check_updates)
                 .on_toggle(DashboardMsg::ToggleAutoCheckUpdates)
+                .size(19)
+                .style(sleek_toggler_style(mode))
+                .into(),
+            ui_font,
+            ui_font_semi,
+        ),
+        hairline_divider(mode),
+        sleek_row(
+            mode,
+            is_rtl,
+            i18n.t("updates.include_prereleases"),
+            Some(i18n.t("hints.include_prereleases_desc")),
+            toggler(config.include_prereleases)
+                .on_toggle(DashboardMsg::ToggleIncludePrereleases)
                 .size(19)
                 .style(sleek_toggler_style(mode))
                 .into(),

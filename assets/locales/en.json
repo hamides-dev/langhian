@@ -231,6 +231,7 @@
     "downloading": "Downloading update...",
     "installing": "Launching installer & restarting...",
     "auto_check": "Automatically check for updates on startup",
+    "include_prereleases": "Include test / nightly pre-releases",
     "open_release": "Open Release Page",
     "check_failed": "Could not check for updates"
   },
@@ -247,7 +248,8 @@
     "restore_clipboard_desc": "Automatically restore your previous clipboard content after capturing or replacing text.",
     "launch_startup_desc": "Start minimized silently to the system tray on login.",
     "show_hud_desc": "Display compact floating pill status when switching prompts or replacing text.",
-    "auto_update_desc": "Check GitHub releases automatically when Langhian launches."
+    "auto_update_desc": "Check GitHub releases automatically when Langhian launches.",
+    "include_prereleases_desc": "Receive preview builds (nightly / pre-release) in addition to stable releases."
   },
   "onboarding": {
     "title": "Welcome to Langhian",

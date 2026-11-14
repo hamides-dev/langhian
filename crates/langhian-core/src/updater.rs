@@ -11,6 +11,8 @@ pub const VERSION_MANIFEST_URL: &str =
     "https://raw.githubusercontent.com/hamides-dev/langhian/main/version.json";
 pub const GITHUB_LATEST_RELEASE_URL: &str =
     "https://api.github.com/repos/hamides-dev/langhian/releases/latest";
+pub const GITHUB_RELEASES_URL: &str =
+    "https://api.github.com/repos/hamides-dev/langhian/releases?per_page=10";
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 pub struct ReleaseAsset {
@@ -83,9 +85,22 @@ impl UpdaterClient {
         &self,
         current_version: &str,
     ) -> Result<UpdateCheckResult, UpdateError> {
-        let manifest = match self.fetch_manifest().await {
-            Ok(m) => m,
-            Err(_) => self.fetch_github_latest_release().await?,
+        self.check_for_updates_with_channel(current_version, false)
+            .await
+    }
+
+    pub async fn check_for_updates_with_channel(
+        &self,
+        current_version: &str,
+        include_prereleases: bool,
+    ) -> Result<UpdateCheckResult, UpdateError> {
+        let manifest = if include_prereleases {
+            self.fetch_github_latest_including_prereleases().await?
+        } else {
+            match self.fetch_manifest().await {
+                Ok(m) => m,
+                Err(_) => self.fetch_github_latest_release().await?,
+            }
         };
         compare_manifest(current_version, &manifest)
     }
@@ -125,59 +140,42 @@ impl UpdaterClient {
             .await
             .map_err(|e| UpdateError::InvalidManifest(e.to_string()))?;
 
-        let tag = json["tag_name"].as_str().unwrap_or("v0.1.0").to_string();
-        let version = tag.trim_start_matches('v').to_string();
-        let release_url = json["html_url"]
-            .as_str()
-            .unwrap_or("https://github.com/hamides-dev/langhian/releases/latest")
-            .to_string();
-        let notes = json["body"].as_str().unwrap_or_default().to_string();
+        Ok(parse_github_release(&json))
+    }
 
-        let mut assets = BTreeMap::new();
-        if let Some(arr) = json["assets"].as_array() {
-            for a in arr {
-                if let (Some(name), Some(url)) =
-                    (a["name"].as_str(), a["browser_download_url"].as_str())
-                {
-                    let key = if name.contains("setup-windows") && name.ends_with(".exe") {
-                        Some("windows_x86_64_installer")
-                    } else if name.contains("windows") && name.ends_with(".zip") {
-                        Some("windows_x86_64_portable")
-                    } else if name.contains("macos-arm64") && name.ends_with(".dmg") {
-                        Some("macos_arm64_dmg")
-                    } else if name.contains("macos-x86_64") && name.ends_with(".dmg") {
-                        Some("macos_x86_64_dmg")
-                    } else if name.ends_with(".deb") {
-                        Some("linux_x86_64_deb")
-                    } else if name.contains("linux") && name.ends_with(".tar.gz") {
-                        Some("linux_x86_64_tar")
-                    } else {
-                        None
-                    };
-                    if let Some(k) = key {
-                        assets.insert(
-                            k.to_string(),
-                            ReleaseAsset {
-                                url: url.to_string(),
-                                sha256: String::new(),
-                            },
-                        );
-                    }
-                }
-            }
+    async fn fetch_github_latest_including_prereleases(
+        &self,
+    ) -> Result<ReleaseManifest, UpdateError> {
+        let resp = self
+            .http
+            .get(GITHUB_RELEASES_URL)
+            .header("Accept", "application/vnd.github+json")
+            .send()
+            .await
+            .map_err(|e| UpdateError::Network(e.to_string()))?;
+
+        if !resp.status().is_success() {
+            return Err(UpdateError::Network(format!("HTTP {}", resp.status())));
         }
 
-        Ok(ReleaseManifest {
-            version,
-            tag,
-            published_at: json["published_at"]
-                .as_str()
-                .unwrap_or_default()
-                .to_string(),
-            release_url,
-            notes,
-            assets,
-        })
+        let releases: Vec<serde_json::Value> = resp
+            .json()
+            .await
+            .map_err(|e| UpdateError::InvalidManifest(e.to_string()))?;
+
+        let latest = releases
+            .iter()
+            .filter(|r| !r["draft"].as_bool().unwrap_or(false))
+            .max_by(|a, b| {
+                let pa = a["published_at"].as_str().unwrap_or("");
+                let pb = b["published_at"].as_str().unwrap_or("");
+                pa.cmp(pb)
+            })
+            .ok_or_else(|| {
+                UpdateError::InvalidManifest("No published releases found".to_string())
+            })?;
+
+        Ok(parse_github_release(latest))
     }
 
     pub async fn download_installer(&self, asset: &ReleaseAsset) -> Result<PathBuf, UpdateError> {
@@ -246,14 +244,84 @@ pub fn platform_asset_key() -> &'static str {
     }
 }
 
+fn parse_github_release(json: &serde_json::Value) -> ReleaseManifest {
+    let tag = json["tag_name"].as_str().unwrap_or("v0.1.0").to_string();
+    let version = tag.trim_start_matches('v').to_string();
+    let release_url = json["html_url"]
+        .as_str()
+        .unwrap_or("https://github.com/hamides-dev/langhian/releases/latest")
+        .to_string();
+    let notes = json["body"].as_str().unwrap_or_default().to_string();
+
+    let mut assets = BTreeMap::new();
+    if let Some(arr) = json["assets"].as_array() {
+        for a in arr {
+            if let (Some(name), Some(url)) =
+                (a["name"].as_str(), a["browser_download_url"].as_str())
+            {
+                let key = if name.contains("setup-windows") && name.ends_with(".exe") {
+                    Some("windows_x86_64_installer")
+                } else if name.contains("windows") && name.ends_with(".zip") {
+                    Some("windows_x86_64_portable")
+                } else if name.contains("macos-arm64") && name.ends_with(".dmg") {
+                    Some("macos_arm64_dmg")
+                } else if name.contains("macos-x86_64") && name.ends_with(".dmg") {
+                    Some("macos_x86_64_dmg")
+                } else if name.ends_with(".deb") {
+                    Some("linux_x86_64_deb")
+                } else if name.contains("linux") && name.ends_with(".tar.gz") {
+                    Some("linux_x86_64_tar")
+                } else {
+                    None
+                };
+                if let Some(k) = key {
+                    assets.insert(
+                        k.to_string(),
+                        ReleaseAsset {
+                            url: url.to_string(),
+                            sha256: String::new(),
+                        },
+                    );
+                }
+            }
+        }
+    }
+
+    ReleaseManifest {
+        version,
+        tag,
+        published_at: json["published_at"]
+            .as_str()
+            .unwrap_or_default()
+            .to_string(),
+        release_url,
+        notes,
+        assets,
+    }
+}
+
 pub fn compare_manifest(
     current_version: &str,
     manifest: &ReleaseManifest,
 ) -> Result<UpdateCheckResult, UpdateError> {
     let cur = Version::parse(current_version.trim().trim_start_matches('v'))
         .map_err(|e| UpdateError::InvalidManifest(e.to_string()))?;
-    let latest = Version::parse(manifest.version.trim().trim_start_matches('v'))
-        .map_err(|e| UpdateError::InvalidManifest(e.to_string()))?;
+
+    let is_nightly = manifest.tag.eq_ignore_ascii_case("nightly")
+        || manifest.version.eq_ignore_ascii_case("nightly");
+
+    let (latest_version, has_update) = if is_nightly {
+        let label = match manifest.published_at.get(..10) {
+            Some(date) if !date.is_empty() => format!("nightly ({date})"),
+            _ => "nightly".to_string(),
+        };
+        (label, true)
+    } else {
+        let latest = Version::parse(manifest.version.trim().trim_start_matches('v'))
+            .map_err(|e| UpdateError::InvalidManifest(e.to_string()))?;
+        let newer = latest > cur;
+        (latest.to_string(), newer)
+    };
 
     let key = platform_asset_key();
     let installer_asset = manifest
@@ -264,8 +332,8 @@ pub fn compare_manifest(
 
     Ok(UpdateCheckResult {
         current_version: cur.to_string(),
-        latest_version: latest.to_string(),
-        has_update: latest > cur,
+        latest_version,
+        has_update,
         release_url: if manifest.release_url.is_empty() {
             "https://github.com/hamides-dev/langhian/releases/latest".to_string()
         } else {
@@ -295,5 +363,33 @@ mod tests {
 
         let same = compare_manifest("0.2.0", &manifest).expect("valid semver");
         assert!(!same.has_update);
+    }
+
+    #[test]
+    fn compares_nightly_and_prerelease_versions() {
+        let nightly = ReleaseManifest {
+            version: "nightly".to_string(),
+            tag: "nightly".to_string(),
+            published_at: "2026-11-14T20:00:00Z".to_string(),
+            release_url: "https://github.com/hamides-dev/langhian/releases/tag/nightly".to_string(),
+            notes: "Nightly build".to_string(),
+            assets: BTreeMap::new(),
+        };
+        let res = compare_manifest("0.2.0", &nightly).expect("nightly manifest");
+        assert!(res.has_update);
+        assert_eq!(res.latest_version, "nightly (2026-11-14)");
+
+        let rc = ReleaseManifest {
+            version: "0.2.1-rc.1".to_string(),
+            tag: "v0.2.1-rc.1".to_string(),
+            published_at: "2026-11-14T20:00:00Z".to_string(),
+            release_url: "https://github.com/hamides-dev/langhian/releases/tag/v0.2.1-rc.1"
+                .to_string(),
+            notes: "RC".to_string(),
+            assets: BTreeMap::new(),
+        };
+        let rc_res = compare_manifest("0.2.0", &rc).expect("prerelease semver");
+        assert!(rc_res.has_update);
+        assert_eq!(rc_res.latest_version, "0.2.1-rc.1");
     }
 }

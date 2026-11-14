@@ -231,6 +231,7 @@
     "downloading": "Güncelleme indiriliyor...",
     "installing": "Kurulum başlatılıyor ve yeniden açılıyor...",
     "auto_check": "Başlangıçta güncellemeleri otomatik denetle",
+    "include_prereleases": "Test / nightly ön sürümlerini dahil et",
     "open_release": "Sürüm Sayfasını Aç",
     "check_failed": "Güncelleme denetlenemedi"
   },
@@ -247,7 +248,8 @@
     "restore_clipboard_desc": "Metin yakalama veya değiştirmeden sonra önceki pano içeriğini otomatik geri yükleyin.",
     "launch_startup_desc": "Oturum açılışında sistem tepsisinde sessizce küçültülmüş başlat.",
     "show_hud_desc": "İstem değiştirirken veya metin yerleştirirken kompakt yüzen durum hapını göster.",
-    "auto_update_desc": "Langhian başlatıldığında GitHub sürümlerini otomatik denetle."
+    "auto_update_desc": "Langhian başlatıldığında GitHub sürümlerini otomatik denetle.",
+    "include_prereleases_desc": "Kararlı sürümlere ek olarak önizleme (nightly / pre-release) derlemelerini de al."
   },
   "onboarding": {
     "title": "Langhian'a Hoş Geldiniz",

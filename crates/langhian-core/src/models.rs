@@ -438,6 +438,8 @@ pub struct AppConfig {
     pub launch_at_startup: bool,
     pub show_hud: bool,
     pub auto_check_updates: bool,
+    #[serde(default)]
+    pub include_prereleases: bool,
 }
 
 impl Default for AppConfig {
@@ -466,6 +468,7 @@ impl Default for AppConfig {
             launch_at_startup: false,
             show_hud: true,
             auto_check_updates: true,
+            include_prereleases: false,
         }
     }
 }
