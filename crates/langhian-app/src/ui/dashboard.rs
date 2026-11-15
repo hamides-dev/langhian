@@ -198,6 +198,7 @@ pub struct DashboardState {
     pub voice_testing: bool,
     pub settings_error: Option<String>,
     pub settings_toast: Option<String>,
+    pub translate_open_picker: Option<TranslateHeaderPicker>,
 
     // Updates
     pub update_checking: bool,
@@ -252,6 +253,7 @@ impl DashboardState {
             voice_testing: false,
             settings_error: None,
             settings_toast: None,
+            translate_open_picker: None,
             update_checking: false,
             update_downloading: false,
             update_download_progress: None,
@@ -312,6 +314,13 @@ impl fmt::Display for SlotChoice {
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum TranslateHeaderPicker {
+    Text,
+    Voice,
+    Prompt,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum ModelPresetKind {
     GoogleFree,
     OpenRouter,
@@ -348,6 +357,7 @@ pub enum DashboardMsg {
     SelectSourceLang(String),
     SelectNativeLang(String),
     SelectTargetLang(String),
+    ToggleTranslatePicker(TranslateHeaderPicker),
     SwapLangs,
     SelectModel(String),
     SelectPrompt(String),
@@ -1245,93 +1255,126 @@ fn view_translate_tab<'a>(
         .find(|pr| pr.id == config.active_prompt_id)
         .cloned();
 
-    let pipeline_row = rtl_row(
+    let header_pill = |kind: TranslateHeaderPicker,
+                       icon: UiIcon,
+                       label: String,
+                       tip: String|
+     -> Element<'a, DashboardMsg> {
+        let is_open = state.translate_open_picker == Some(kind);
+        tooltip(
+            button(
+                rtl_row(
+                    is_rtl,
+                    vec![
+                        ui_icon(
+                            icon,
+                            14.0,
+                            if is_open {
+                                p.accent_text
+                            } else {
+                                p.text_secondary
+                            },
+                        )
+                        .into(),
+                        text(label)
+                            .size(12)
+                            .font(ui_font_semi)
+                            .color(if is_open {
+                                p.accent_text
+                            } else {
+                                p.text_primary
+                            })
+                            .wrapping(Wrapping::None)
+                            .shaping(Shaping::Advanced)
+                            .into(),
+                    ],
+                )
+                .spacing(6)
+                .align_y(Alignment::Center),
+            )
+            .on_press(DashboardMsg::ToggleTranslatePicker(kind))
+            .padding([6, 11])
+            .style(move |_theme, status| {
+                let pal = palette_for(mode);
+                let bg = if is_open {
+                    pal.accent_soft
+                } else {
+                    match status {
+                        button::Status::Hovered | button::Status::Pressed => pal.bg_surface_hover,
+                        _ => pal.bg_elevated,
+                    }
+                };
+                button::Style {
+                    background: Some(Background::Color(bg)),
+                    text_color: if is_open {
+                        pal.accent_text
+                    } else {
+                        pal.text_primary
+                    },
+                    border: Border {
+                        color: if is_open {
+                            pal.border_focus
+                        } else {
+                            pal.border_subtle
+                        },
+                        width: 1.0,
+                        radius: 16.0.into(),
+                    },
+                    ..Default::default()
+                }
+            }),
+            text(tip)
+                .size(12)
+                .font(ui_font)
+                .color(p.text_primary)
+                .shaping(Shaping::Advanced),
+            tooltip::Position::Bottom,
+        )
+        .gap(6)
+        .padding(6)
+        .style(sidebar_tooltip_style(mode))
+        .into()
+    };
+
+    let active_model_label = sel_model
+        .as_ref()
+        .map(|m| m.label.clone())
+        .unwrap_or_else(|| i18n.t("translate.text_model_label"));
+    let active_voice_label = sel_voice_model
+        .as_ref()
+        .map(|v| v.label.clone())
+        .unwrap_or_else(|| i18n.t("translate.voice_model_label"));
+    let active_prompt_label = sel_prompt
+        .as_ref()
+        .map(|pr| pr.label.clone())
+        .unwrap_or_else(|| i18n.t("tray.active_prompt"));
+    let active_prompt_short = active_prompt_label
+        .split_whitespace()
+        .next()
+        .unwrap_or(&active_prompt_label)
+        .to_string();
+
+    let header_actions = rtl_row(
         is_rtl,
         vec![
-            rtl_row(
-                is_rtl,
-                vec![
-                    text(i18n.t("translate.text_model_label"))
-                        .size(11.5)
-                        .font(ui_font_semi)
-                        .color(p.text_muted)
-                        .into(),
-                    pick_list(model_opts, sel_model, |x| DashboardMsg::SelectModel(x.id))
-                        .font(ui_font)
-                        .text_size(12)
-                        .padding([6, 10])
-                        .width(Length::Fill)
-                        .style(sleek_pick_list_style(mode))
-                        .menu_style(sleek_menu_style(mode))
-                        .into(),
-                ],
-            )
-            .spacing(6)
-            .align_y(Alignment::Center)
-            .width(Length::FillPortion(3))
-            .into(),
-            rtl_row(
-                is_rtl,
-                vec![
-                    text(i18n.t("translate.voice_model_label"))
-                        .size(11.5)
-                        .font(ui_font_semi)
-                        .color(p.text_muted)
-                        .into(),
-                    pick_list(voice_opts, sel_voice_model, |x| {
-                        let id = if x.id == "__auto__" { None } else { Some(x.id) };
-                        DashboardMsg::SelectVoiceModel(id)
-                    })
-                    .font(ui_font)
-                    .text_size(12)
-                    .padding([6, 10])
-                    .width(Length::Fill)
-                    .style(sleek_pick_list_style(mode))
-                    .menu_style(sleek_menu_style(mode))
-                    .into(),
-                ],
-            )
-            .spacing(6)
-            .align_y(Alignment::Center)
-            .width(Length::FillPortion(3))
-            .into(),
-            rtl_row(
-                is_rtl,
-                vec![
-                    text(i18n.t("tray.active_prompt"))
-                        .size(11.5)
-                        .font(ui_font_semi)
-                        .color(p.text_muted)
-                        .into(),
-                    pick_list(prompt_opts, sel_prompt, |x| {
-                        DashboardMsg::SelectPrompt(x.id)
-                    })
-                    .font(ui_font)
-                    .text_size(12)
-                    .padding([6, 10])
-                    .width(Length::Fill)
-                    .style(sleek_pick_list_style(mode))
-                    .menu_style(sleek_menu_style(mode))
-                    .into(),
-                ],
-            )
-            .spacing(6)
-            .align_y(Alignment::Center)
-            .width(Length::FillPortion(2))
-            .into(),
-        ],
-    )
-    .spacing(10)
-    .align_y(Alignment::Center);
-
-    let control_card = container(container(pipeline_row).padding([10, 14]))
-        .width(Length::Fill)
-        .style(card_style(mode, 10.0));
-
-    let header = page_header(
-        i18n.t("nav.translate"),
-        None,
-        Some(
+            header_pill(
+                TranslateHeaderPicker::Text,
+                UiIcon::Translate,
+                i18n.t("translate.text_model_label"),
+                active_model_label,
+            ),
+            header_pill(
+                TranslateHeaderPicker::Voice,
+                UiIcon::VolumeUp,
+                i18n.t("translate.voice_model_label"),
+                active_voice_label,
+            ),
+            header_pill(
+                TranslateHeaderPicker::Prompt,
+                UiIcon::WandStars,
+                active_prompt_short,
+                active_prompt_label,
+            ),
             button(
                 rtl_row(
                     is_rtl,
@@ -1340,6 +1383,8 @@ fn view_translate_tab<'a>(
                         text(i18n.t("translate.screenshot_btn"))
                             .size(12)
                             .font(ui_font_semi)
+                            .wrapping(Wrapping::None)
+                            .shaping(Shaping::Advanced)
                             .into(),
                     ],
                 )
@@ -1347,10 +1392,18 @@ fn view_translate_tab<'a>(
                 .align_y(Alignment::Center),
             )
             .on_press(DashboardMsg::TriggerScreenshot)
-            .padding([7, 14])
+            .padding([6, 12])
             .style(pill_button_style(mode))
             .into(),
-        ),
+        ],
+    )
+    .spacing(6)
+    .align_y(Alignment::Center);
+
+    let header = page_header(
+        i18n.t("nav.translate"),
+        None,
+        Some(header_actions.into()),
         p,
         is_rtl,
         ui_font,
@@ -1598,9 +1651,7 @@ fn view_translate_tab<'a>(
         .width(Length::Fill)
         .height(Length::Fill);
 
-    let mut content = column![header, control_card, panes]
-        .spacing(12)
-        .height(Length::Fill);
+    let mut content = column![header, panes].spacing(12).height(Length::Fill);
 
     if let Some(v) = &state.selected_vocab_preview {
         content = content.push(
@@ -1843,7 +1894,118 @@ fn view_translate_tab<'a>(
     .spacing(8)
     .align_y(Alignment::Center);
 
-    content.push(actions).into()
+    let base: Element<'a, DashboardMsg> = content.push(actions).into();
+
+    let Some(open_picker) = state.translate_open_picker else {
+        return base;
+    };
+
+    let (menu_items, selected_id) = match open_picker {
+        TranslateHeaderPicker::Text => (model_opts, sel_model.as_ref().map(|m| m.id.clone())),
+        TranslateHeaderPicker::Voice => {
+            (voice_opts, sel_voice_model.as_ref().map(|v| v.id.clone()))
+        }
+        TranslateHeaderPicker::Prompt => (prompt_opts, sel_prompt.as_ref().map(|pr| pr.id.clone())),
+    };
+
+    let item_rows: Vec<Element<'a, DashboardMsg>> = menu_items
+        .into_iter()
+        .map(|item| {
+            let is_selected = selected_id.as_deref() == Some(item.id.as_str());
+            let msg = match open_picker {
+                TranslateHeaderPicker::Text => DashboardMsg::SelectModel(item.id),
+                TranslateHeaderPicker::Voice => {
+                    let id = if item.id == "__auto__" {
+                        None
+                    } else {
+                        Some(item.id)
+                    };
+                    DashboardMsg::SelectVoiceModel(id)
+                }
+                TranslateHeaderPicker::Prompt => DashboardMsg::SelectPrompt(item.id),
+            };
+            button(
+                rtl_row(
+                    is_rtl,
+                    vec![
+                        text(item.label)
+                            .size(12.5)
+                            .font(if is_selected { ui_font_semi } else { ui_font })
+                            .color(if is_selected {
+                                p.accent_text
+                            } else {
+                                p.text_primary
+                            })
+                            .shaping(Shaping::Advanced)
+                            .width(Length::Fill)
+                            .into(),
+                        if is_selected {
+                            ui_icon(UiIcon::Check, 14.0, p.accent_text).into()
+                        } else {
+                            Space::new().width(Length::Fixed(14.0)).into()
+                        },
+                    ],
+                )
+                .spacing(8)
+                .align_y(Alignment::Center),
+            )
+            .on_press(msg)
+            .padding([7, 10])
+            .width(Length::Fill)
+            .style(move |_theme, status| {
+                let pal = palette_for(mode);
+                let bg = if is_selected {
+                    pal.accent_soft
+                } else {
+                    match status {
+                        button::Status::Hovered | button::Status::Pressed => pal.bg_surface_hover,
+                        _ => Color::TRANSPARENT,
+                    }
+                };
+                button::Style {
+                    background: Some(Background::Color(bg)),
+                    text_color: if is_selected {
+                        pal.accent_text
+                    } else {
+                        pal.text_primary
+                    },
+                    border: Border {
+                        radius: 6.0.into(),
+                        ..Default::default()
+                    },
+                    ..Default::default()
+                }
+            })
+            .into()
+        })
+        .collect();
+
+    let dropdown_card = container(
+        sleek_scrollable(column(item_rows).spacing(2).width(Length::Fill), mode)
+            .height(Length::Shrink),
+    )
+    .padding(6)
+    .width(Length::Fixed(280.0))
+    .max_height(260.0)
+    .style(elevated_box_style(mode, 10.0));
+
+    let menu_align_x = horizontal_for_dir(!is_rtl);
+    let dropdown_overlay = container(dropdown_card)
+        .width(Length::Fill)
+        .height(Length::Fill)
+        .padding(Padding {
+            top: 42.0,
+            right: 0.0,
+            bottom: 0.0,
+            left: 0.0,
+        })
+        .align_x(menu_align_x)
+        .align_y(Alignment::Start);
+
+    stack![base, dropdown_overlay]
+        .width(Length::Fill)
+        .height(Length::Fill)
+        .into()
 }
 
 // ============================================================================
