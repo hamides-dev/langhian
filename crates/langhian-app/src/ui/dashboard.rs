@@ -1245,48 +1245,6 @@ fn view_translate_tab<'a>(
         .find(|pr| pr.id == config.active_prompt_id)
         .cloned();
 
-    let lang_row = rtl_row(
-        is_rtl,
-        vec![
-            pick_list(src_langs, sel_src, |x| DashboardMsg::SelectSourceLang(x.id))
-                .font(ui_font)
-                .text_size(12)
-                .padding([7, 11])
-                .width(Length::FillPortion(3))
-                .style(sleek_pick_list_style(mode))
-                .menu_style(sleek_menu_style(mode))
-                .into(),
-            button(
-                rtl_row(
-                    is_rtl,
-                    vec![
-                        ui_icon(UiIcon::SwapHoriz, 15.0, p.text_primary).into(),
-                        text(i18n.t("translate.swap_langs"))
-                            .size(12)
-                            .font(ui_font_semi)
-                            .into(),
-                    ],
-                )
-                .spacing(5)
-                .align_y(Alignment::Center),
-            )
-            .on_press(DashboardMsg::SwapLangs)
-            .padding([7, 12])
-            .style(pill_button_style(mode))
-            .into(),
-            pick_list(dst_langs, sel_dst, |x| DashboardMsg::SelectTargetLang(x.id))
-                .font(ui_font)
-                .text_size(12)
-                .padding([7, 11])
-                .width(Length::FillPortion(3))
-                .style(sleek_pick_list_style(mode))
-                .menu_style(sleek_menu_style(mode))
-                .into(),
-        ],
-    )
-    .spacing(8)
-    .align_y(Alignment::Center);
-
     let pipeline_row = rtl_row(
         is_rtl,
         vec![
@@ -1366,13 +1324,9 @@ fn view_translate_tab<'a>(
     .spacing(10)
     .align_y(Alignment::Center);
 
-    let control_card = container(column![
-        container(lang_row).padding([10, 14]),
-        hairline_divider(mode),
-        container(pipeline_row).padding([10, 14]),
-    ])
-    .width(Length::Fill)
-    .style(card_style(mode, 10.0));
+    let control_card = container(container(pipeline_row).padding([10, 14]))
+        .width(Length::Fill)
+        .style(card_style(mode, 10.0));
 
     let header = page_header(
         i18n.t("nav.translate"),
@@ -1403,8 +1357,9 @@ fn view_translate_tab<'a>(
         ui_font_bold,
     );
 
-    let source_pane = container(
-        column![
+    let source_header = rtl_row(
+        is_rtl,
+        vec![
             aligned_text(
                 i18n.t("translate.source_label"),
                 12.0,
@@ -1412,6 +1367,22 @@ fn view_translate_tab<'a>(
                 Some(p.text_secondary),
                 is_rtl,
             ),
+            pick_list(src_langs, sel_src, |x| DashboardMsg::SelectSourceLang(x.id))
+                .font(ui_font)
+                .text_size(11.5)
+                .padding([3, 9])
+                .style(sleek_pick_list_style(mode))
+                .menu_style(sleek_menu_style(mode))
+                .into(),
+            Space::new().width(Length::Fill).into(),
+        ],
+    )
+    .spacing(8)
+    .align_y(Alignment::Center);
+
+    let source_pane = container(
+        column![
+            source_header,
             hairline_divider(mode),
             rtl_editor(&state.source_editor)
                 .placeholder(i18n.t("translate.source_placeholder"))
@@ -1498,6 +1469,13 @@ fn view_translate_tab<'a>(
             Some(p.text_secondary),
             is_rtl,
         ),
+        pick_list(dst_langs, sel_dst, |x| DashboardMsg::SelectTargetLang(x.id))
+            .font(ui_font)
+            .text_size(11.5)
+            .padding([3, 9])
+            .style(sleek_pick_list_style(mode))
+            .menu_style(sleek_menu_style(mode))
+            .into(),
         container(text(dir_badge_label).size(11).font(ui_font_semi).color(
             if state.manual_auto_reversed {
                 p.success
@@ -1602,9 +1580,31 @@ fn view_translate_tab<'a>(
     .height(Length::Fill)
     .style(elevated_box_style(mode, 10.0));
 
-    let panes = rtl_row(is_rtl, vec![source_pane.into(), output_pane.into()])
-        .spacing(12)
-        .height(Length::Fill);
+    let swap_btn = tooltip(
+        square_icon_button(
+            ui_icon(UiIcon::SwapHoriz, 16.0, p.text_secondary),
+            32.0,
+            DashboardMsg::SwapLangs,
+            pill_button_style(mode),
+        ),
+        text(i18n.t("translate.swap_langs"))
+            .size(12)
+            .font(ui_font)
+            .color(p.text_primary)
+            .shaping(Shaping::Advanced),
+        tooltip::Position::Top,
+    )
+    .gap(6)
+    .padding(6)
+    .style(sidebar_tooltip_style(mode));
+
+    let panes = rtl_row(
+        is_rtl,
+        vec![source_pane.into(), swap_btn.into(), output_pane.into()],
+    )
+    .spacing(8)
+    .align_y(Alignment::Center)
+    .height(Length::Fill);
 
     let mut content = column![header, control_card, panes]
         .spacing(12)
