@@ -727,6 +727,200 @@ fn sidebar_tooltip_style(mode: UiThemeMode) -> impl Fn(&iced::Theme) -> containe
 }
 
 #[allow(clippy::too_many_arguments)]
+fn sidebar_update_banner<'a>(
+    state: &'a DashboardState,
+    i18n: &'a Translator,
+    collapsed: bool,
+    mode: UiThemeMode,
+    p: ThemePalette,
+    is_rtl: bool,
+    ui_font: Font,
+    ui_font_semi: Font,
+) -> Option<Element<'a, DashboardMsg>> {
+    let has_update = state.update_status.as_ref().is_some_and(|r| r.has_update);
+    if !state.update_downloading && !has_update {
+        return None;
+    }
+
+    let banner_box_style = move |_theme: &iced::Theme| {
+        let pal = palette_for(mode);
+        container::Style {
+            background: Some(Background::Color(pal.accent_soft)),
+            border: Border {
+                color: pal.border_subtle,
+                width: 1.0,
+                radius: 8.0.into(),
+            },
+            ..Default::default()
+        }
+    };
+
+    if state.update_downloading {
+        let pct = state.update_download_progress.unwrap_or(0);
+        let label = format!("{} {}%", i18n.t("updates.downloading"), pct);
+
+        if collapsed {
+            let tip_pos = if is_rtl {
+                tooltip::Position::Left
+            } else {
+                tooltip::Position::Right
+            };
+            return Some(
+                tooltip(
+                    container(
+                        column![
+                            ui_icon(UiIcon::Download, 15.0, p.accent_text),
+                            progress_bar(0.0..=100.0, pct as f32).girth(3),
+                        ]
+                        .spacing(4)
+                        .align_x(Alignment::Center),
+                    )
+                    .padding([6, 6])
+                    .width(Length::Fill)
+                    .style(banner_box_style),
+                    text(label)
+                        .size(12)
+                        .font(ui_font)
+                        .color(p.text_primary)
+                        .shaping(Shaping::Advanced),
+                    tip_pos,
+                )
+                .gap(8)
+                .padding(6)
+                .style(sidebar_tooltip_style(mode))
+                .into(),
+            );
+        }
+
+        return Some(
+            container(
+                column![
+                    rtl_row(
+                        is_rtl,
+                        vec![
+                            ui_icon(UiIcon::Download, 14.0, p.accent_text).into(),
+                            text(label)
+                                .size(11.5)
+                                .font(ui_font_semi)
+                                .color(p.accent_text)
+                                .shaping(Shaping::Advanced)
+                                .into(),
+                        ],
+                    )
+                    .spacing(6)
+                    .align_y(Alignment::Center),
+                    progress_bar(0.0..=100.0, pct as f32).girth(4),
+                ]
+                .spacing(6),
+            )
+            .padding([8, 10])
+            .width(Length::Fill)
+            .style(banner_box_style)
+            .into(),
+        );
+    }
+
+    let version = state
+        .update_status
+        .as_ref()
+        .map(|r| r.latest_version.as_str())
+        .unwrap_or("");
+    let full_label = if version.is_empty() {
+        i18n.t("updates.available")
+    } else {
+        format!("{} · v{}", i18n.t("updates.available"), version)
+    };
+
+    if collapsed {
+        let tip_pos = if is_rtl {
+            tooltip::Position::Left
+        } else {
+            tooltip::Position::Right
+        };
+        return Some(
+            tooltip(
+                button(
+                    container(ui_icon(UiIcon::Download, 16.0, p.accent_text))
+                        .width(Length::Fill)
+                        .align_x(Alignment::Center)
+                        .align_y(Alignment::Center),
+                )
+                .on_press(DashboardMsg::DownloadAndInstallUpdate)
+                .padding([8, 8])
+                .width(Length::Fill)
+                .style(move |_theme, status| {
+                    let pal = palette_for(mode);
+                    let bg = match status {
+                        button::Status::Hovered | button::Status::Pressed => pal.bg_surface_hover,
+                        _ => pal.accent_soft,
+                    };
+                    button::Style {
+                        background: Some(Background::Color(bg)),
+                        text_color: pal.accent_text,
+                        border: Border {
+                            color: pal.border_subtle,
+                            width: 1.0,
+                            radius: 8.0.into(),
+                        },
+                        ..Default::default()
+                    }
+                }),
+                text(full_label)
+                    .size(12)
+                    .font(ui_font)
+                    .color(p.text_primary)
+                    .shaping(Shaping::Advanced),
+                tip_pos,
+            )
+            .gap(8)
+            .padding(6)
+            .style(sidebar_tooltip_style(mode))
+            .into(),
+        );
+    }
+
+    Some(
+        button(
+            rtl_row(
+                is_rtl,
+                vec![
+                    ui_icon(UiIcon::Download, 14.0, p.accent_text).into(),
+                    text(full_label)
+                        .size(11.5)
+                        .font(ui_font_semi)
+                        .color(p.accent_text)
+                        .shaping(Shaping::Advanced)
+                        .into(),
+                ],
+            )
+            .spacing(6)
+            .align_y(Alignment::Center),
+        )
+        .on_press(DashboardMsg::DownloadAndInstallUpdate)
+        .padding([8, 10])
+        .width(Length::Fill)
+        .style(move |_theme, status| {
+            let pal = palette_for(mode);
+            let bg = match status {
+                button::Status::Hovered | button::Status::Pressed => pal.bg_surface_hover,
+                _ => pal.accent_soft,
+            };
+            button::Style {
+                background: Some(Background::Color(bg)),
+                text_color: pal.accent_text,
+                border: Border {
+                    color: pal.border_subtle,
+                    width: 1.0,
+                    radius: 8.0.into(),
+                },
+                ..Default::default()
+            }
+        })
+        .into(),
+    )
+}
+
+#[allow(clippy::too_many_arguments)]
 fn sidebar_nav_button<'a>(
     tab: DashboardTab,
     icon: UiIcon,
@@ -864,25 +1058,35 @@ fn view_sidebar<'a>(
     let bottom_radius = if state.is_maximized { 0.0 } else { 11.0 };
     let sidebar_width = if collapsed { 64.0 } else { 220.0 };
 
-    container(
-        column![
-            nav_col,
-            Space::new().height(Length::Fill),
-            hairline_divider(mode),
-            settings_btn,
-        ]
-        .spacing(8)
-        .height(Length::Fill),
-    )
-    .width(Length::Fixed(sidebar_width))
-    .height(Length::Fill)
-    .padding(if collapsed {
-        Padding::from([16, 10])
-    } else {
-        Padding::from([16, 14])
-    })
-    .style(rounded_sidebar_style(mode, bottom_radius, is_rtl))
-    .into()
+    let mut sidebar_items: Vec<Element<'a, DashboardMsg>> =
+        vec![nav_col.into(), Space::new().height(Length::Fill).into()];
+
+    if let Some(update_banner) = sidebar_update_banner(
+        state,
+        i18n,
+        collapsed,
+        mode,
+        p,
+        is_rtl,
+        ui_font,
+        ui_font_semi,
+    ) {
+        sidebar_items.push(update_banner);
+    }
+
+    sidebar_items.push(hairline_divider(mode));
+    sidebar_items.push(settings_btn);
+
+    container(column(sidebar_items).spacing(8).height(Length::Fill))
+        .width(Length::Fixed(sidebar_width))
+        .height(Length::Fill)
+        .padding(if collapsed {
+            Padding::from([16, 10])
+        } else {
+            Padding::from([16, 14])
+        })
+        .style(rounded_sidebar_style(mode, bottom_radius, is_rtl))
+        .into()
 }
 
 fn page_header<'a, M: 'a>(

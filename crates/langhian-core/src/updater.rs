@@ -427,6 +427,33 @@ pub fn compare_manifest_with_build(
     })
 }
 
+/// Performs a lightweight TCP connectivity check before running background update checks.
+///
+/// Returns `false` when the host is offline or GitHub cannot be reached, allowing automatic
+/// update checks to skip cleanly without issuing HTTP requests or surfacing network errors.
+pub async fn has_internet_connectivity() -> bool {
+    let check = tokio::task::spawn_blocking(|| {
+        use std::net::{TcpStream, ToSocketAddrs};
+        let timeout = Duration::from_secs(2);
+        for host in ["api.github.com", "raw.githubusercontent.com"] {
+            if let Ok(addrs) = (host, 443).to_socket_addrs() {
+                for addr in addrs.take(2) {
+                    if TcpStream::connect_timeout(&addr, timeout).is_ok() {
+                        return true;
+                    }
+                }
+            }
+        }
+        false
+    });
+
+    tokio::time::timeout(Duration::from_secs(3), check)
+        .await
+        .ok()
+        .and_then(Result::ok)
+        .unwrap_or(false)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
