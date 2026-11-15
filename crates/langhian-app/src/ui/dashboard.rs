@@ -676,6 +676,45 @@ fn view_custom_titlebar<'a>(
 }
 
 #[allow(clippy::too_many_arguments)]
+fn sidebar_nav_button<'a>(
+    tab: DashboardTab,
+    icon: UiIcon,
+    label: String,
+    active_tab: DashboardTab,
+    mode: UiThemeMode,
+    p: ThemePalette,
+    is_rtl: bool,
+    ui_font: Font,
+    ui_font_semi: Font,
+) -> Element<'a, DashboardMsg> {
+    let is_active = active_tab == tab;
+    let lbl_font = if is_active { ui_font_semi } else { ui_font };
+    let icon_color = if is_active {
+        p.accent_text
+    } else {
+        p.text_secondary
+    };
+
+    button(
+        rtl_row(
+            is_rtl,
+            vec![
+                ui_icon(icon, 17.0, icon_color).into(),
+                aligned_text(label, 13.0, lbl_font, None, is_rtl),
+            ],
+        )
+        .spacing(10)
+        .align_y(Alignment::Center)
+        .width(Length::Fill),
+    )
+    .on_press(DashboardMsg::SwitchTab(tab))
+    .padding([9, 12])
+    .width(Length::Fill)
+    .style(nav_button_style(mode, is_active))
+    .into()
+}
+
+#[allow(clippy::too_many_arguments)]
 fn view_sidebar<'a>(
     state: &'a DashboardState,
     i18n: &'a Translator,
@@ -708,50 +747,52 @@ fn view_sidebar<'a>(
             UiIcon::History,
             i18n.t("nav.history"),
         ),
-        (
-            DashboardTab::Settings,
-            UiIcon::Settings,
-            i18n.t("nav.settings"),
-        ),
     ];
 
     let mut nav_col = column![].spacing(5);
     for (tab, icon, label) in nav_items {
-        let is_active = state.active_tab == tab;
-        let lbl_font = if is_active { ui_font_semi } else { ui_font };
-        let icon_color = if is_active {
-            p.accent_text
-        } else {
-            p.text_secondary
-        };
-
-        let btn = button(
-            rtl_row(
-                is_rtl,
-                vec![
-                    ui_icon(icon, 17.0, icon_color).into(),
-                    aligned_text(label, 13.0, lbl_font, None, is_rtl),
-                ],
-            )
-            .spacing(10)
-            .align_y(Alignment::Center)
-            .width(Length::Fill),
-        )
-        .on_press(DashboardMsg::SwitchTab(tab))
-        .padding([9, 12])
-        .width(Length::Fill)
-        .style(nav_button_style(mode, is_active));
-        nav_col = nav_col.push(btn);
+        nav_col = nav_col.push(sidebar_nav_button(
+            tab,
+            icon,
+            label,
+            state.active_tab,
+            mode,
+            p,
+            is_rtl,
+            ui_font,
+            ui_font_semi,
+        ));
     }
+
+    let settings_btn = sidebar_nav_button(
+        DashboardTab::Settings,
+        UiIcon::Settings,
+        i18n.t("nav.settings"),
+        state.active_tab,
+        mode,
+        p,
+        is_rtl,
+        ui_font,
+        ui_font_semi,
+    );
 
     let bottom_radius = if state.is_maximized { 0.0 } else { 11.0 };
 
-    container(column![nav_col, Space::new().height(Length::Fill)].height(Length::Fill))
-        .width(Length::Fixed(220.0))
-        .height(Length::Fill)
-        .padding(Padding::from([16, 14]))
-        .style(rounded_sidebar_style(mode, bottom_radius, is_rtl))
-        .into()
+    container(
+        column![
+            nav_col,
+            Space::new().height(Length::Fill),
+            hairline_divider(mode),
+            settings_btn,
+        ]
+        .spacing(8)
+        .height(Length::Fill),
+    )
+    .width(Length::Fixed(220.0))
+    .height(Length::Fill)
+    .padding(Padding::from([16, 14]))
+    .style(rounded_sidebar_style(mode, bottom_radius, is_rtl))
+    .into()
 }
 
 fn page_header<'a, M: 'a>(
