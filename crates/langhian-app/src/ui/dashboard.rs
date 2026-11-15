@@ -6,10 +6,10 @@ use crate::ui::theme::{
     elevated_box_style, font_for_text, font_for_ui, ghost_button_style, hairline_divider,
     horizontal_for_dir, keycap, nav_button_style, palette_for, pill_button_style,
     primary_button_style, render_markdown_with_highlights, rounded_sidebar_style,
-    rounded_titlebar_style, rtl_row, selectable_card_style, sleek_editor_style, sleek_input_style,
-    sleek_menu_style, sleek_pick_list_style, sleek_row, sleek_scrollable, sleek_toggler_style,
-    square_icon_button, theme_preview_card_content, window_close_button_style,
-    wrap_frameless_resize_frame,
+    rounded_titlebar_style, rtl_row, seamless_editor_style, selectable_card_style,
+    sleek_editor_style, sleek_input_style, sleek_menu_style, sleek_pick_list_style, sleek_row,
+    sleek_scrollable, sleek_toggler_style, square_icon_button, theme_preview_card_content,
+    window_close_button_style, wrap_frameless_resize_frame,
 };
 use iced::font::Weight;
 use iced::widget::text::Shaping;
@@ -1412,6 +1412,7 @@ fn view_translate_tab<'a>(
                 Some(p.text_secondary),
                 is_rtl,
             ),
+            hairline_divider(mode),
             rtl_editor(&state.source_editor)
                 .placeholder(i18n.t("translate.source_placeholder"))
                 .on_action(DashboardMsg::SourceEditorAction)
@@ -1421,9 +1422,9 @@ fn view_translate_tab<'a>(
                     Weight::Normal
                 ))
                 .size(14)
-                .padding(12)
+                .padding([4, 2])
                 .height(Length::Fill)
-                .style(sleek_editor_style(mode)),
+                .style(seamless_editor_style(mode)),
         ]
         .spacing(8)
         .height(Length::Fill),
@@ -1431,7 +1432,7 @@ fn view_translate_tab<'a>(
     .padding(14)
     .width(Length::FillPortion(1))
     .height(Length::Fill)
-    .style(card_style(mode, 10.0));
+    .style(elevated_box_style(mode, 10.0));
 
     let effective_lang = state
         .manual_effective_target
@@ -1587,20 +1588,11 @@ fn view_translate_tab<'a>(
             rtl_row(is_rtl, out_header_items)
                 .spacing(8)
                 .align_y(Alignment::Center),
+            hairline_divider(mode),
             container(output_body)
-                .padding(12)
+                .padding([4, 2])
                 .width(Length::Fill)
-                .height(Length::Fill)
-                .style(move |_| container::Style {
-                    background: Some(Background::Color(p.bg_input)),
-                    border: Border {
-                        color: p.border_subtle,
-                        width: 1.0,
-                        radius: 8.0.into(),
-                    },
-                    text_color: Some(p.text_primary),
-                    ..Default::default()
-                }),
+                .height(Length::Fill),
         ]
         .spacing(8)
         .height(Length::Fill),
@@ -1608,7 +1600,7 @@ fn view_translate_tab<'a>(
     .padding(14)
     .width(Length::FillPortion(1))
     .height(Length::Fill)
-    .style(card_style(mode, 10.0));
+    .style(elevated_box_style(mode, 10.0));
 
     let panes = rtl_row(is_rtl, vec![source_pane.into(), output_pane.into()])
         .spacing(12)
