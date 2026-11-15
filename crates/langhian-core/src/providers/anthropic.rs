@@ -200,6 +200,7 @@ pub async fn fetch_models_detailed(
                     crate::models::ProviderKind::Anthropic,
                     id,
                 )),
+                supports_audio: Some(false),
                 context_length: Some(200_000),
             });
         }

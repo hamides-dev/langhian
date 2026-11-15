@@ -44,6 +44,10 @@ pub struct ModelProfile {
     #[serde(default)]
     pub vision_source: CapabilitySource,
     #[serde(default)]
+    pub supports_audio: bool,
+    #[serde(default)]
+    pub audio_source: CapabilitySource,
+    #[serde(default)]
     pub extra_headers: BTreeMap<String, String>,
     #[serde(default = "default_temperature")]
     pub temperature: f32,
@@ -66,6 +70,8 @@ impl ModelProfile {
             requires_api_key: false,
             supports_vision: false,
             vision_source: CapabilitySource::AutoDetected,
+            supports_audio: false,
+            audio_source: CapabilitySource::AutoDetected,
             extra_headers: BTreeMap::new(),
             temperature: 0.0,
             max_tokens: None,
@@ -82,6 +88,8 @@ impl ModelProfile {
             requires_api_key: true,
             supports_vision: true,
             vision_source: CapabilitySource::Heuristic,
+            supports_audio: false,
+            audio_source: CapabilitySource::Heuristic,
             extra_headers: BTreeMap::new(),
             temperature: 0.2,
             max_tokens: None,
@@ -104,6 +112,8 @@ impl ModelProfile {
             requires_api_key: true,
             supports_vision: true,
             vision_source: CapabilitySource::Heuristic,
+            supports_audio: false,
+            audio_source: CapabilitySource::Heuristic,
             extra_headers: headers,
             temperature: 0.2,
             max_tokens: None,
@@ -120,6 +130,8 @@ impl ModelProfile {
             requires_api_key: false,
             supports_vision: false,
             vision_source: CapabilitySource::Heuristic,
+            supports_audio: false,
+            audio_source: CapabilitySource::Heuristic,
             extra_headers: BTreeMap::new(),
             temperature: 0.2,
             max_tokens: None,
@@ -136,6 +148,8 @@ impl ModelProfile {
             requires_api_key: false,
             supports_vision: false,
             vision_source: CapabilitySource::Heuristic,
+            supports_audio: false,
+            audio_source: CapabilitySource::Heuristic,
             extra_headers: BTreeMap::new(),
             temperature: 0.2,
             max_tokens: None,
@@ -152,6 +166,8 @@ impl ModelProfile {
             requires_api_key: true,
             supports_vision: true,
             vision_source: CapabilitySource::Heuristic,
+            supports_audio: false,
+            audio_source: CapabilitySource::Heuristic,
             extra_headers: BTreeMap::new(),
             temperature: 0.2,
             max_tokens: Some(2048),
@@ -168,9 +184,20 @@ impl ModelProfile {
             requires_api_key: true,
             supports_vision: true,
             vision_source: CapabilitySource::Heuristic,
+            supports_audio: false,
+            audio_source: CapabilitySource::Heuristic,
             extra_headers: BTreeMap::new(),
             temperature: 0.2,
             max_tokens: None,
+        }
+    }
+
+    pub fn supports_audio_output(&self) -> bool {
+        if self.audio_source == CapabilitySource::ManualOverride {
+            self.supports_audio
+        } else {
+            self.supports_audio
+                || crate::providers::infer_audio_capability(self.provider, &self.model_id)
         }
     }
 }
@@ -359,6 +386,7 @@ pub struct ModelCatalogEntry {
     pub is_free: bool,
     pub is_local: bool,
     pub supports_vision: Option<bool>,
+    pub supports_audio: Option<bool>,
     pub context_length: Option<u32>,
 }
 
@@ -438,6 +466,18 @@ pub struct AppConfig {
     pub launch_at_startup: bool,
     pub show_hud: bool,
     pub auto_check_updates: bool,
+    #[serde(default)]
+    pub voice_translation_enabled: bool,
+    #[serde(default)]
+    pub active_voice_model_id: Option<String>,
+    #[serde(default = "default_voice_name")]
+    pub voice_name: String,
+    #[serde(default)]
+    pub voice_player_position: Option<[f32; 2]>,
+}
+
+fn default_voice_name() -> String {
+    "Kore".to_string()
 }
 
 impl Default for AppConfig {
@@ -466,6 +506,10 @@ impl Default for AppConfig {
             launch_at_startup: false,
             show_hud: true,
             auto_check_updates: true,
+            voice_translation_enabled: false,
+            active_voice_model_id: None,
+            voice_name: default_voice_name(),
+            voice_player_position: None,
         }
     }
 }
@@ -476,6 +520,22 @@ impl AppConfig {
             .iter()
             .find(|m| m.id == self.active_model_id)
             .unwrap_or(&self.models[0])
+    }
+
+    pub fn resolved_voice_model(&self) -> Option<&ModelProfile> {
+        if let Some(id) = self.active_voice_model_id.as_deref()
+            && let Some(m) = self
+                .models
+                .iter()
+                .find(|m| m.id == id && m.supports_audio_output())
+        {
+            return Some(m);
+        }
+        let active = self.active_model();
+        if active.supports_audio_output() {
+            return Some(active);
+        }
+        self.models.iter().find(|m| m.supports_audio_output())
     }
 
     pub fn active_prompt(&self) -> &PromptPreset {
@@ -491,6 +551,14 @@ impl AppConfig {
         }
         if !self.models.iter().any(|m| m.id == self.active_model_id) {
             self.active_model_id = self.models[0].id.clone();
+        }
+        if let Some(ref vid) = self.active_voice_model_id
+            && !self.models.iter().any(|m| m.id == *vid)
+        {
+            self.active_voice_model_id = None;
+        }
+        if self.voice_name.trim().is_empty() {
+            self.voice_name = default_voice_name();
         }
         if self.prompts.is_empty() {
             self.prompts = PromptPreset::defaults();
@@ -668,5 +736,9 @@ mod tests {
         assert!(parsed.preserve_markdown);
         assert!(parsed.modal_position.is_none());
         assert!(!parsed.modal_pinned);
+        assert!(!parsed.voice_translation_enabled);
+        assert!(parsed.active_voice_model_id.is_none());
+        assert_eq!(parsed.voice_name, "Kore");
+        assert!(parsed.voice_player_position.is_none());
     }
 }
