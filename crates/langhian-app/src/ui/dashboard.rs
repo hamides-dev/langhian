@@ -2243,6 +2243,7 @@ fn view_models_tab<'a>(
         .any(|m| !is_dedicated_tts_model(m.provider, &m.model_id));
 
     let mut rows_col = column![];
+    let mut open_menu: Option<(usize, String, Element<'a, DashboardMsg>)> = None;
     for (idx, m) in config.models.iter().enumerate() {
         if idx > 0 {
             rows_col = rows_col.push(hairline_divider(mode));
@@ -2438,7 +2439,7 @@ fn view_models_tab<'a>(
         let menu_open = state.open_model_actions_id.as_deref() == Some(m.id.as_str());
         action_items.push(
             button(ui_icon(
-                UiIcon::MoreVert,
+                UiIcon::MoreHoriz,
                 16.0,
                 if menu_open {
                     p.accent_text
@@ -2480,24 +2481,21 @@ fn view_models_tab<'a>(
             .into(),
         );
 
-        let mut row_col = column![
-            container(
-                rtl_row(
-                    is_rtl,
-                    vec![
-                        left_col.into(),
-                        rtl_row(is_rtl, action_items)
-                            .spacing(6)
-                            .align_y(Alignment::Center)
-                            .into(),
-                    ],
-                )
-                .spacing(12)
-                .align_y(Alignment::Center),
+        let row_box = container(
+            rtl_row(
+                is_rtl,
+                vec![
+                    left_col.into(),
+                    rtl_row(is_rtl, action_items)
+                        .spacing(6)
+                        .align_y(Alignment::Center)
+                        .into(),
+                ],
             )
-            .padding([12, 16])
-            .width(Length::Fill),
-        ]
+            .spacing(12)
+            .align_y(Alignment::Center),
+        )
+        .padding([12, 16])
         .width(Length::Fill);
 
         if menu_open {
@@ -2577,32 +2575,70 @@ fn view_models_tab<'a>(
                 ));
             }
 
-            let menu_card = container(menu_items)
+            let menu_card: Element<'a, DashboardMsg> = container(menu_items)
                 .padding(6)
                 .width(Length::Fixed(180.0))
-                .style(elevated_box_style(mode, 10.0));
+                .style(elevated_box_style(mode, 10.0))
+                .into();
 
-            row_col = row_col.push(
+            open_menu = Some((idx, m.id.clone(), menu_card));
+        }
+
+        rows_col = rows_col.push(row_box);
+    }
+
+    let rows_card = container(rows_col)
+        .width(Length::Fill)
+        .style(card_style(mode, 10.0));
+
+    let model_count = config.models.len();
+    let single_open_bottom_pad = if open_menu.is_some() && model_count == 1 {
+        76.0
+    } else {
+        0.0
+    };
+    let rows_section: Element<'a, DashboardMsg> =
+        if let Some((open_idx, open_id, menu_card)) = open_menu {
+            const ROW_STEP: f32 = 67.0;
+            let open_upward = model_count > 1 && open_idx + 1 == model_count;
+            let menu_overlay = if open_upward {
                 container(menu_card)
+                    .width(Length::Fill)
+                    .height(Length::Fill)
                     .padding(Padding {
                         top: 0.0,
                         right: 16.0,
-                        bottom: 10.0,
+                        bottom: 52.0,
                         left: 16.0,
                     })
+                    .align_x(horizontal_for_dir(!is_rtl))
+                    .align_y(Alignment::End)
+            } else {
+                container(menu_card)
                     .width(Length::Fill)
-                    .align_x(horizontal_for_dir(!is_rtl)),
-            );
-        }
+                    .height(Length::Fill)
+                    .padding(Padding {
+                        top: (open_idx as f32) * ROW_STEP + 48.0,
+                        right: 16.0,
+                        bottom: 0.0,
+                        left: 16.0,
+                    })
+                    .align_x(horizontal_for_dir(!is_rtl))
+                    .align_y(Alignment::Start)
+            };
+            let backdrop_close = mouse_area(Space::new().width(Length::Fill).height(Length::Fill))
+                .on_press(DashboardMsg::ToggleModelActionsMenu(open_id));
+            stack![rows_card, backdrop_close, menu_overlay]
+                .width(Length::Fill)
+                .into()
+        } else {
+            rows_card.into()
+        };
 
-        rows_col = rows_col.push(row_col);
+    content = content.push(rows_section);
+    if single_open_bottom_pad > 0.0 {
+        content = content.push(Space::new().height(Length::Fixed(single_open_bottom_pad)));
     }
-
-    content = content.push(
-        container(rows_col)
-            .width(Length::Fill)
-            .style(card_style(mode, 10.0)),
-    );
 
     sleek_scrollable(
         container(content)

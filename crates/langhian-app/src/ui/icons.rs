@@ -56,7 +56,7 @@ const ICON_KEYBOARD: &[u8] = include_bytes!("../../../../assets/icons/ui/keyboar
 const ICON_LANGUAGE: &[u8] = include_bytes!("../../../../assets/icons/ui/language.svg");
 const ICON_LIGHT_MODE: &[u8] = include_bytes!("../../../../assets/icons/ui/light_mode.svg");
 const ICON_MENU_BOOK: &[u8] = include_bytes!("../../../../assets/icons/ui/menu_book.svg");
-const ICON_MORE_VERT: &[u8] = include_bytes!("../../../../assets/icons/ui/more_vert.svg");
+const ICON_MORE_HORIZ: &[u8] = include_bytes!("../../../../assets/icons/ui/more_horiz.svg");
 const ICON_PAYMENTS: &[u8] = include_bytes!("../../../../assets/icons/ui/payments.svg");
 const ICON_PSYCHOLOGY: &[u8] = include_bytes!("../../../../assets/icons/ui/psychology.svg");
 const ICON_REFRESH: &[u8] = include_bytes!("../../../../assets/icons/ui/refresh.svg");
@@ -118,7 +118,7 @@ pub enum UiIcon {
     Language,
     LightMode,
     MenuBook,
-    MoreVert,
+    MoreHoriz,
     Payments,
     PlayArrow,
     Psychology,
@@ -171,7 +171,7 @@ impl UiIcon {
             Self::Language => ICON_LANGUAGE,
             Self::LightMode => ICON_LIGHT_MODE,
             Self::MenuBook => ICON_MENU_BOOK,
-            Self::MoreVert => ICON_MORE_VERT,
+            Self::MoreHoriz => ICON_MORE_HORIZ,
             Self::Payments => ICON_PAYMENTS,
             Self::PlayArrow => ICON_PLAY_ARROW,
             Self::Psychology => ICON_PSYCHOLOGY,
