@@ -152,6 +152,7 @@ pub struct DashboardState {
     pub show_onboarding: bool,
     pub onboarding: OnboardingState,
     pub is_maximized: bool,
+    pub sidebar_collapsed: bool,
     pub titlebar_close_hovered: bool,
 
     // Manual Translate tab
@@ -211,6 +212,7 @@ impl DashboardState {
             show_onboarding: !config.onboarding_completed,
             onboarding: OnboardingState::default(),
             is_maximized: false,
+            sidebar_collapsed: false,
             titlebar_close_hovered: false,
             source_editor: rtl_editor::Content::new(),
             manual_output: String::new(),
@@ -333,6 +335,7 @@ pub enum DashboardMsg {
     OpenOnboarding,
 
     SwitchTab(DashboardTab),
+    ToggleSidebar,
     SwitchSettingsSubTab(SettingsSubTab),
 
     // Manual Translate tab
@@ -681,6 +684,7 @@ fn sidebar_nav_button<'a>(
     icon: UiIcon,
     label: String,
     active_tab: DashboardTab,
+    collapsed: bool,
     mode: UiThemeMode,
     p: ThemePalette,
     is_rtl: bool,
@@ -695,7 +699,12 @@ fn sidebar_nav_button<'a>(
         p.text_secondary
     };
 
-    button(
+    let content: Element<'a, DashboardMsg> = if collapsed {
+        container(ui_icon(icon, 18.0, icon_color))
+            .width(Length::Fill)
+            .center_x(Length::Fill)
+            .into()
+    } else {
         rtl_row(
             is_rtl,
             vec![
@@ -705,13 +714,16 @@ fn sidebar_nav_button<'a>(
         )
         .spacing(10)
         .align_y(Alignment::Center)
-        .width(Length::Fill),
-    )
-    .on_press(DashboardMsg::SwitchTab(tab))
-    .padding([9, 12])
-    .width(Length::Fill)
-    .style(nav_button_style(mode, is_active))
-    .into()
+        .width(Length::Fill)
+        .into()
+    };
+
+    button(content)
+        .on_press(DashboardMsg::SwitchTab(tab))
+        .padding(if collapsed { [10, 0] } else { [9, 12] })
+        .width(Length::Fill)
+        .style(nav_button_style(mode, is_active))
+        .into()
 }
 
 #[allow(clippy::too_many_arguments)]
@@ -725,6 +737,42 @@ fn view_sidebar<'a>(
     ui_font_semi: Font,
     _ui_font_bold: Font,
 ) -> Element<'a, DashboardMsg> {
+    let collapsed = state.sidebar_collapsed;
+
+    let toggle_icon = match (collapsed, is_rtl) {
+        (false, false) | (true, true) => UiIcon::ChevronLeft,
+        (false, true) | (true, false) => UiIcon::ChevronRight,
+    };
+
+    let toggle_btn = button(
+        container(ui_icon(toggle_icon, 16.0, p.text_secondary))
+            .width(Length::Fill)
+            .center_x(Length::Fill),
+    )
+    .on_press(DashboardMsg::ToggleSidebar)
+    .padding([6, 8])
+    .width(if collapsed {
+        Length::Fill
+    } else {
+        Length::Fixed(32.0)
+    })
+    .style(ghost_button_style(mode, false));
+
+    let header_row: Element<'a, DashboardMsg> = if collapsed {
+        container(toggle_btn)
+            .width(Length::Fill)
+            .center_x(Length::Fill)
+            .into()
+    } else {
+        rtl_row(
+            is_rtl,
+            vec![Space::new().width(Length::Fill).into(), toggle_btn.into()],
+        )
+        .width(Length::Fill)
+        .align_y(Alignment::Center)
+        .into()
+    };
+
     let nav_items = [
         (
             DashboardTab::Translate,
@@ -756,6 +804,7 @@ fn view_sidebar<'a>(
             icon,
             label,
             state.active_tab,
+            collapsed,
             mode,
             p,
             is_rtl,
@@ -769,6 +818,7 @@ fn view_sidebar<'a>(
         UiIcon::Settings,
         i18n.t("nav.settings"),
         state.active_tab,
+        collapsed,
         mode,
         p,
         is_rtl,
@@ -777,9 +827,16 @@ fn view_sidebar<'a>(
     );
 
     let bottom_radius = if state.is_maximized { 0.0 } else { 11.0 };
+    let sidebar_width = if collapsed { 64.0 } else { 220.0 };
+    let sidebar_pad = if collapsed {
+        Padding::from([12, 10])
+    } else {
+        Padding::from([12, 14])
+    };
 
     container(
         column![
+            header_row,
             nav_col,
             Space::new().height(Length::Fill),
             hairline_divider(mode),
@@ -788,9 +845,9 @@ fn view_sidebar<'a>(
         .spacing(8)
         .height(Length::Fill),
     )
-    .width(Length::Fixed(220.0))
+    .width(Length::Fixed(sidebar_width))
     .height(Length::Fill)
-    .padding(Padding::from([16, 14]))
+    .padding(sidebar_pad)
     .style(rounded_sidebar_style(mode, bottom_radius, is_rtl))
     .into()
 }
