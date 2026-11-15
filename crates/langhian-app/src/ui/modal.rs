@@ -179,14 +179,16 @@ pub fn view_modal<'a>(
                 .padding([2, 8])
                 .style(badge_style(p.accent_soft, p.accent_text, p.border_subtle))
                 .into(),
-                Space::new().width(Length::Fill).into(),
+                Space::new().width(Length::Fill).height(Length::Fill).into(),
             ],
         )
         .spacing(8)
         .align_y(Alignment::Center)
-        .width(Length::Fill),
+        .width(Length::Fill)
+        .height(Length::Fixed(34.0)),
     )
-    .on_press(ModalMsg::DragWindow);
+    .on_press(ModalMsg::DragWindow)
+    .interaction(iced::mouse::Interaction::Grab);
 
     let retranslate_btn = tooltip(
         square_icon_button(
@@ -691,7 +693,12 @@ pub fn view_modal<'a>(
     body = body.push(footer_bar);
 
     let modal_inner = container(body)
-        .padding(Padding::from([10, 14]))
+        .padding(Padding {
+            top: 4.0,
+            right: 14.0,
+            bottom: 10.0,
+            left: 14.0,
+        })
         .width(Length::Fill)
         .height(Length::Fill);
 

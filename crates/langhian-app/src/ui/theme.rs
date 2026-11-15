@@ -1418,27 +1418,13 @@ fn render_inline_spans<'a, M: Clone + 'a>(
         return Space::new().height(0).into();
     }
 
-    if align == TextAlignment::Right {
-        container(
-            rich_text::<VocabEntry, M, Theme, iced::Renderer>(spans)
-                .size(size)
-                .font(base_font)
-                .align_x(TextAlignment::Default)
-                .width(Length::Shrink)
-                .on_link_click(on_vocab_click),
-        )
+    rich_text::<VocabEntry, M, Theme, iced::Renderer>(spans)
+        .size(size)
+        .font(base_font)
+        .align_x(align)
         .width(Length::Fill)
-        .align_x(Horizontal::Right)
+        .on_link_click(on_vocab_click)
         .into()
-    } else {
-        rich_text::<VocabEntry, M, Theme, iced::Renderer>(spans)
-            .size(size)
-            .font(base_font)
-            .align_x(align)
-            .width(Length::Fill)
-            .on_link_click(on_vocab_click)
-            .into()
-    }
 }
 
 fn append_vocab_spans<'a>(
@@ -1495,25 +1481,11 @@ pub fn render_highlighted_text<'a, M: Clone + 'a>(
             .into();
     }
 
-    if align == TextAlignment::Right {
-        container(
-            rich_text::<VocabEntry, M, Theme, iced::Renderer>(spans)
-                .size(size)
-                .font(font)
-                .align_x(TextAlignment::Default)
-                .width(Length::Shrink)
-                .on_link_click(on_vocab_click),
-        )
+    rich_text::<VocabEntry, M, Theme, iced::Renderer>(spans)
+        .size(size)
+        .font(font)
+        .align_x(align)
         .width(Length::Fill)
-        .align_x(Horizontal::Right)
+        .on_link_click(on_vocab_click)
         .into()
-    } else {
-        rich_text::<VocabEntry, M, Theme, iced::Renderer>(spans)
-            .size(size)
-            .font(font)
-            .align_x(align)
-            .width(Length::Fill)
-            .on_link_click(on_vocab_click)
-            .into()
-    }
 }
