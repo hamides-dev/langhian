@@ -12,10 +12,10 @@ use crate::ui::theme::{
     window_close_button_style, wrap_frameless_resize_frame,
 };
 use iced::font::Weight;
-use iced::widget::text::Shaping;
+use iced::widget::text::{Shaping, Wrapping};
 use iced::widget::{
-    Space, button, column, container, mouse_area, pick_list, progress_bar, row, text, text_input,
-    toggler, tooltip,
+    Space, button, column, container, mouse_area, pick_list, progress_bar, row, stack, text,
+    text_input, toggler, tooltip,
 };
 use iced::window;
 use iced::{Alignment, Background, Border, Color, Element, Font, Length, Padding};
@@ -23,7 +23,7 @@ use langhian_core::{
     AppConfig, CapabilitySource, HistoryEntry, ModelCatalogEntry, ModelProfile, PromptPreset,
     ProviderKind, SpeechAudio, TranslationMode, Translator, UiThemeMode, UpdateCheckResult,
     VocabEntry, VocabMatcher, curated_voices_for_profile, find_vocab_match_index,
-    is_dedicated_tts_model, language_display_name, supported_languages,
+    is_dedicated_tts_model, supported_languages,
 };
 use std::fmt;
 
@@ -1360,13 +1360,13 @@ fn view_translate_tab<'a>(
     let source_header = rtl_row(
         is_rtl,
         vec![
-            aligned_text(
-                i18n.t("translate.source_label"),
-                12.0,
-                ui_font_semi,
-                Some(p.text_secondary),
-                is_rtl,
-            ),
+            text(i18n.t("translate.source_label"))
+                .size(12)
+                .font(ui_font_semi)
+                .color(p.text_secondary)
+                .wrapping(Wrapping::None)
+                .shaping(Shaping::Advanced)
+                .into(),
             pick_list(src_langs, sel_src, |x| DashboardMsg::SelectSourceLang(x.id))
                 .font(ui_font)
                 .text_size(11.5)
@@ -1447,28 +1447,14 @@ fn view_translate_tab<'a>(
         .into()
     };
 
-    let dir_badge_label = if state.manual_auto_reversed {
-        format!(
-            "{} {}",
-            i18n.t("translate.direction_auto_swapped"),
-            language_display_name(effective_lang)
-        )
-    } else {
-        format!(
-            "{} <-> {}",
-            language_display_name(&config.native_language),
-            language_display_name(&config.target_language)
-        )
-    };
-
     let mut out_header_items: Vec<Element<'a, DashboardMsg>> = vec![
-        aligned_text(
-            i18n.t("translate.target_label"),
-            12.0,
-            ui_font_semi,
-            Some(p.text_secondary),
-            is_rtl,
-        ),
+        text(i18n.t("translate.target_label"))
+            .size(12)
+            .font(ui_font_semi)
+            .color(p.text_secondary)
+            .wrapping(Wrapping::None)
+            .shaping(Shaping::Advanced)
+            .into(),
         pick_list(dst_langs, sel_dst, |x| DashboardMsg::SelectTargetLang(x.id))
             .font(ui_font)
             .text_size(11.5)
@@ -1476,28 +1462,6 @@ fn view_translate_tab<'a>(
             .style(sleek_pick_list_style(mode))
             .menu_style(sleek_menu_style(mode))
             .into(),
-        container(text(dir_badge_label).size(11).font(ui_font_semi).color(
-            if state.manual_auto_reversed {
-                p.success
-            } else {
-                p.accent_text
-            },
-        ))
-        .padding([2, 8])
-        .style(badge_style(
-            if state.manual_auto_reversed {
-                p.success_soft
-            } else {
-                p.accent_soft
-            },
-            if state.manual_auto_reversed {
-                p.success
-            } else {
-                p.accent_text
-            },
-            p.border_subtle,
-        ))
-        .into(),
         Space::new().width(Length::Fill).into(),
     ];
 
@@ -1581,12 +1545,34 @@ fn view_translate_tab<'a>(
     .style(elevated_box_style(mode, 10.0));
 
     let swap_btn = tooltip(
-        square_icon_button(
-            ui_icon(UiIcon::SwapHoriz, 16.0, p.text_secondary),
-            32.0,
-            DashboardMsg::SwapLangs,
-            pill_button_style(mode),
-        ),
+        button(
+            container(ui_icon(UiIcon::SwapHoriz, 16.0, p.text_primary))
+                .width(Length::Fill)
+                .height(Length::Fill)
+                .align_x(Alignment::Center)
+                .align_y(Alignment::Center),
+        )
+        .on_press(DashboardMsg::SwapLangs)
+        .width(Length::Fixed(32.0))
+        .height(Length::Fixed(32.0))
+        .padding(0)
+        .style(move |_theme, status| {
+            let pal = palette_for(mode);
+            let bg = match status {
+                button::Status::Hovered | button::Status::Pressed => pal.bg_surface_hover,
+                _ => pal.bg_elevated,
+            };
+            button::Style {
+                background: Some(Background::Color(bg)),
+                text_color: pal.text_primary,
+                border: Border {
+                    color: pal.border_focus,
+                    width: 1.0,
+                    radius: 16.0.into(),
+                },
+                ..Default::default()
+            }
+        }),
         text(i18n.t("translate.swap_langs"))
             .size(12)
             .font(ui_font)
@@ -1598,13 +1584,19 @@ fn view_translate_tab<'a>(
     .padding(6)
     .style(sidebar_tooltip_style(mode));
 
-    let panes = rtl_row(
-        is_rtl,
-        vec![source_pane.into(), swap_btn.into(), output_pane.into()],
-    )
-    .spacing(8)
-    .align_y(Alignment::Center)
-    .height(Length::Fill);
+    let panes_row = rtl_row(is_rtl, vec![source_pane.into(), output_pane.into()])
+        .spacing(8)
+        .height(Length::Fill);
+
+    let swap_overlay = container(swap_btn)
+        .width(Length::Fill)
+        .height(Length::Fill)
+        .align_x(Alignment::Center)
+        .align_y(Alignment::Center);
+
+    let panes = stack![panes_row, swap_overlay]
+        .width(Length::Fill)
+        .height(Length::Fill);
 
     let mut content = column![header, control_card, panes]
         .spacing(12)
