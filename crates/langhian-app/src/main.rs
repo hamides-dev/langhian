@@ -476,7 +476,7 @@ impl LanghianApp {
 
         if self.config.auto_check_updates {
             subs.push(
-                iced::time::every(Duration::from_secs(6 * 60 * 60))
+                iced::time::every(Duration::from_secs(5 * 60))
                     .map(|_| Message::PeriodicUpdateCheck),
             );
         }
