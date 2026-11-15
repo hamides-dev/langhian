@@ -2310,14 +2310,10 @@ fn view_models_tab<'a>(
                     text(i18n.t("models.active_text_badge"))
                         .size(10)
                         .font(ui_font_semi)
-                        .color(p.success),
+                        .color(p.accent_text),
                 )
                 .padding([2, 7])
-                .style(badge_style(
-                    p.success_soft,
-                    p.success,
-                    Color::from_rgba(0.20, 0.83, 0.60, 0.32),
-                )),
+                .style(badge_style(p.accent_soft, p.accent_text, p.border_focus)),
             );
         }
 
@@ -2381,8 +2377,15 @@ fn view_models_tab<'a>(
                 .align_y(Alignment::Center),
             )
             .padding([5, 10]);
+            let is_non_interactive_active = active && on_press.is_none();
             let styled = if active {
-                base.style(primary_button_style(mode))
+                base.style(move |theme, status| {
+                    let mut st = primary_button_style(mode)(theme, status);
+                    if is_non_interactive_active && matches!(status, button::Status::Disabled) {
+                        st.background = Some(iced::Background::Color(palette_for(mode).accent));
+                    }
+                    st
+                })
             } else {
                 base.style(pill_button_style(mode))
             };
