@@ -114,6 +114,8 @@ jobs:
         with:
           targets: x86_64-pc-windows-msvc
       - uses: Swatinem/rust-cache@v2
+        with:
+          shared-key: ${{ needs.prepare.outputs.tag_name == 'nightly' && 'nightly-fast' || 'stable-lto' }}
 
       - name: Build Release Binary
         env:
@@ -167,6 +169,8 @@ jobs:
         with:
           targets: ${{ matrix.target }}
       - uses: Swatinem/rust-cache@v2
+        with:
+          shared-key: ${{ needs.prepare.outputs.tag_name == 'nightly' && 'nightly-fast' || 'stable-lto' }}
 
       - name: Build Release Binary
         env:
@@ -236,6 +240,8 @@ jobs:
 
       - uses: dtolnay/rust-toolchain@stable
       - uses: Swatinem/rust-cache@v2
+        with:
+          shared-key: ${{ needs.prepare.outputs.tag_name == 'nightly' && 'nightly-fast' || 'stable-lto' }}
 
       - name: Build Release Binary
         env:
