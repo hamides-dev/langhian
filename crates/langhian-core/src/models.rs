@@ -467,6 +467,8 @@ pub struct AppConfig {
     pub show_hud: bool,
     pub auto_check_updates: bool,
     #[serde(default)]
+    pub include_prereleases: bool,
+    #[serde(default)]
     pub voice_translation_enabled: bool,
     #[serde(default)]
     pub active_voice_model_id: Option<String>,
@@ -506,6 +508,7 @@ impl Default for AppConfig {
             launch_at_startup: false,
             show_hud: true,
             auto_check_updates: true,
+            include_prereleases: false,
             voice_translation_enabled: false,
             active_voice_model_id: None,
             voice_name: default_voice_name(),
