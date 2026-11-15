@@ -18,10 +18,12 @@
     <string>Langhian</string>
     <key>CFBundlePackageType</key>
     <string>APPL</string>
+    <!-- x-release-please-start-version -->
     <key>CFBundleShortVersionString</key>
     <string>0.3.0</string>
     <key>CFBundleVersion</key>
     <string>0.3.0</string>
+    <!-- x-release-please-end -->
     <key>LSMinimumSystemVersion</key>
     <string>12.0</string>
     <key>NSHighResolutionCapable</key>

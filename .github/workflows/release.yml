@@ -9,9 +9,9 @@ on:
   workflow_dispatch:
     inputs:
       tag:
-        description: "Release tag (e.g. v0.2.1)"
+        description: "Release tag (e.g. v0.3.0)"
         required: false
-        default: "v0.2.1"
+        default: "v0.3.0"
 
 permissions:
   contents: write
@@ -48,6 +48,7 @@ jobs:
       tag_name: ${{ steps.meta.outputs.tag_name }}
       version: ${{ steps.meta.outputs.version }}
       release_name: ${{ steps.meta.outputs.release_name }}
+      release_body: ${{ steps.meta.outputs.release_body }}
       prerelease: ${{ steps.meta.outputs.prerelease }}
       make_latest: ${{ steps.meta.outputs.make_latest }}
       generate_release_notes: ${{ steps.meta.outputs.generate_release_notes }}
@@ -57,10 +58,12 @@ jobs:
       - name: Compute Release Metadata
         id: meta
         run: |
-          CARGO_VERSION=$(sed -n 's/^version = "\([^"]*\)"/\1/p' Cargo.toml | head -n 1)
+          CARGO_VERSION=$(sed -n 's/^version = "\([^"]*\)".*/\1/p' Cargo.toml | head -n 1)
           if [ -z "$CARGO_VERSION" ]; then
-            CARGO_VERSION="0.1.0"
+            CARGO_VERSION="0.3.0"
           fi
+
+          RELEASE_BODY=""
 
           if [ "${{ needs.release-please.outputs.release_created }}" = "true" ]; then
             TAG_NAME="${{ needs.release-please.outputs.tag_name }}"
@@ -77,7 +80,7 @@ jobs:
             RELEASE_NAME="Langhian Translation ${TAG_NAME}"
             GEN_NOTES="true"
           elif [ "${{ github.event_name }}" = "workflow_dispatch" ]; then
-            TAG_NAME="${{ github.event.inputs.tag || 'v0.2.1' }}"
+            TAG_NAME="${{ github.event.inputs.tag || 'v0.3.0' }}"
             VERSION="${TAG_NAME#v}"
             PRERELEASE="false"
             MAKE_LATEST="true"
@@ -89,12 +92,14 @@ jobs:
             PRERELEASE="true"
             MAKE_LATEST="false"
             RELEASE_NAME="Langhian Translation Nightly (Pre-release)"
+            RELEASE_BODY="Automated nightly build for commit ${GITHUB_SHA}."
             GEN_NOTES="true"
           fi
 
           echo "tag_name=${TAG_NAME}" >> "$GITHUB_OUTPUT"
           echo "version=${VERSION}" >> "$GITHUB_OUTPUT"
           echo "release_name=${RELEASE_NAME}" >> "$GITHUB_OUTPUT"
+          echo "release_body=${RELEASE_BODY}" >> "$GITHUB_OUTPUT"
           echo "prerelease=${PRERELEASE}" >> "$GITHUB_OUTPUT"
           echo "make_latest=${MAKE_LATEST}" >> "$GITHUB_OUTPUT"
           echo "generate_release_notes=${GEN_NOTES}" >> "$GITHUB_OUTPUT"
@@ -111,6 +116,9 @@ jobs:
       - uses: Swatinem/rust-cache@v2
 
       - name: Build Release Binary
+        env:
+          LANGHIAN_BUILD_SHA: ${{ github.sha }}
+          LANGHIAN_BUILD_CHANNEL: ${{ needs.prepare.outputs.prerelease == 'true' && 'nightly' || 'stable' }}
         run: cargo build --release --target x86_64-pc-windows-msvc -p langhian-app
 
       - name: Package Portable ZIP
@@ -158,6 +166,9 @@ jobs:
       - uses: Swatinem/rust-cache@v2
 
       - name: Build Release Binary
+        env:
+          LANGHIAN_BUILD_SHA: ${{ github.sha }}
+          LANGHIAN_BUILD_CHANNEL: ${{ needs.prepare.outputs.prerelease == 'true' && 'nightly' || 'stable' }}
         run: cargo build --release --target ${{ matrix.target }} -p langhian-app
 
       - name: Package .app and .dmg
@@ -223,6 +234,9 @@ jobs:
       - uses: Swatinem/rust-cache@v2
 
       - name: Build Release Binary
+        env:
+          LANGHIAN_BUILD_SHA: ${{ github.sha }}
+          LANGHIAN_BUILD_CHANNEL: ${{ needs.prepare.outputs.prerelease == 'true' && 'nightly' || 'stable' }}
         run: cargo build --release -p langhian-app
 
       - name: Package .tar.gz and .deb
@@ -276,7 +290,10 @@ jobs:
 
       - name: Update Nightly Tag
         if: needs.prepare.outputs.tag_name == 'nightly'
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: |
+          gh release delete nightly --yes --cleanup-tag -R "${{ github.repository }}" || true
           git config user.name "github-actions[bot]"
           git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
           git tag -f nightly "${{ github.sha }}"
@@ -297,6 +314,7 @@ jobs:
         with:
           tag_name: ${{ needs.prepare.outputs.tag_name }}
           name: ${{ needs.prepare.outputs.release_name }}
+          body: ${{ needs.prepare.outputs.release_body }}
           prerelease: ${{ needs.prepare.outputs.prerelease == 'true' }}
           make_latest: ${{ needs.prepare.outputs.make_latest }}
           generate_release_notes: ${{ needs.prepare.outputs.generate_release_notes == 'true' }}

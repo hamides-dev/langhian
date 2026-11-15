@@ -4,9 +4,11 @@
 #define MyAppURL "https://github.com/hamides-dev/langhian"
 #define MyAppExeName "langhian.exe"
 
+; x-release-please-start-version
 #ifndef MyAppVersion
   #define MyAppVersion "0.3.0"
 #endif
+; x-release-please-end
 
 [Setup]
 AppId={{8D4F63B7-2793-4F27-AE5B-3A14D4A0F8C1}
