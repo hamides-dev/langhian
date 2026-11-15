@@ -3897,28 +3897,10 @@ fn view_settings_tab<'a>(
 ) -> Element<'a, DashboardMsg> {
     let h_align = horizontal_for_dir(is_rtl);
 
-    let auto_save_pill = container(
-        rtl_row(
-            is_rtl,
-            vec![
-                ui_icon(UiIcon::CheckCircle, 14.0, p.success).into(),
-                text(i18n.t("settings.auto_save_hint"))
-                    .size(11.5)
-                    .font(ui_font_semi)
-                    .color(p.success)
-                    .into(),
-            ],
-        )
-        .spacing(6)
-        .align_y(Alignment::Center),
-    )
-    .padding([5, 11])
-    .style(badge_style(p.success_soft, p.success, p.border_subtle));
-
     let header = page_header(
         i18n.t("settings.title"),
         Some(i18n.t("hints.settings_sub")),
-        Some(auto_save_pill.into()),
+        None,
         p,
         is_rtl,
         ui_font,
