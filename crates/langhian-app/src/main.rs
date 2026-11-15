@@ -129,7 +129,6 @@ struct LanghianApp {
 
     // Window tracking
     dashboard_id: Option<window::Id>,
-    dashboard_opening: bool,
     modal_id: Option<window::Id>,
     modal_opened_at: Option<Instant>,
     modal_has_focused: bool,
@@ -150,6 +149,7 @@ struct LanghianApp {
     pending_replace_prev_clip: Option<String>,
     pending_target_hwnd: isize,
     translation_seq: u64,
+    voice_gen_seq: u64,
     audio_player: AudioPlayer,
     pending_voice_launch: Option<PendingModalLaunch>,
 }
@@ -175,12 +175,26 @@ enum Message {
         cursor_phys: Option<(i32, i32)>,
         result: Result<platform::clipboard::CapturedSelection, String>,
     },
+    DoubleShiftCaptured {
+        target_hwnd: isize,
+        anchor_phys: Option<(i32, i32, i32)>,
+        cursor_phys: Option<(i32, i32)>,
+        result: Result<platform::clipboard::CapturedSelection, String>,
+    },
     ModalTranslationFinished {
         seq: u64,
         effective_target: String,
         was_auto_reversed: bool,
         result: Result<ModalTranslationOutcome, TranslationFail>,
         mode: TranslationMode,
+    },
+    ModalVoiceGenerated {
+        seq: u64,
+        result: Result<(SpeechAudio, String), String>,
+    },
+    ManualVoiceGenerated {
+        seq: u64,
+        result: Result<(SpeechAudio, String), String>,
     },
     InPlaceFlowFinished(Result<(String, String, Option<String>), String>),
     ManualTranslateFinished {
@@ -220,6 +234,29 @@ enum WindowKind {
     Snip,
     Hud,
     VoicePlayer,
+}
+
+fn classify_window_role(
+    target: window::Id,
+    dashboard_id: Option<window::Id>,
+    modal_id: Option<window::Id>,
+    snip_id: Option<window::Id>,
+    hud_id: Option<window::Id>,
+    voice_player_id: Option<window::Id>,
+) -> Option<WindowKind> {
+    if Some(target) == modal_id {
+        Some(WindowKind::Modal)
+    } else if Some(target) == snip_id {
+        Some(WindowKind::Snip)
+    } else if Some(target) == hud_id {
+        Some(WindowKind::Hud)
+    } else if Some(target) == voice_player_id {
+        Some(WindowKind::VoicePlayer)
+    } else if Some(target) == dashboard_id {
+        Some(WindowKind::Dashboard)
+    } else {
+        None
+    }
 }
 
 #[derive(Debug, Clone)]
@@ -321,11 +358,12 @@ impl LanghianApp {
             .any(|a| a == "--minimized" || a == "--background" || a == "--background-only");
 
         let mut tasks: Vec<Task<Message>> = Vec::new();
-        let mut dashboard_opening = false;
+        let mut dashboard_id = None;
 
         if !start_minimized {
-            dashboard_opening = true;
-            tasks.push(open_dashboard_task(app_icon.clone()));
+            let (id, task) = open_dashboard_task(app_icon.clone());
+            dashboard_id = Some(id);
+            tasks.push(task);
         }
 
         let mut app = Self {
@@ -341,8 +379,7 @@ impl LanghianApp {
             shared_shortcuts,
             tray,
             app_icon,
-            dashboard_id: None,
-            dashboard_opening,
+            dashboard_id,
             modal_id: None,
             modal_opened_at: None,
             modal_has_focused: false,
@@ -361,6 +398,7 @@ impl LanghianApp {
             pending_replace_prev_clip: None,
             pending_target_hwnd: 0,
             translation_seq: 0,
+            voice_gen_seq: 0,
             audio_player: AudioPlayer::new(),
             pending_voice_launch: None,
         };
@@ -387,21 +425,28 @@ impl LanghianApp {
     }
 
     fn title(&self, window: window::Id) -> String {
-        if Some(window) == self.modal_id {
-            "Langhian Quick Translate".to_string()
-        } else if Some(window) == self.snip_id {
-            "Langhian Screenshot Capture".to_string()
-        } else if Some(window) == self.hud_id {
-            "Langhian HUD".to_string()
-        } else if Some(window) == self.voice_player_id {
-            self.i18n.t("voice_player.title")
-        } else {
-            format!(
+        match self.window_role(window) {
+            Some(WindowKind::Modal) => "Langhian Quick Translate".to_string(),
+            Some(WindowKind::Snip) => "Langhian Screenshot Capture".to_string(),
+            Some(WindowKind::Hud) => "Langhian HUD".to_string(),
+            Some(WindowKind::VoicePlayer) => self.i18n.t("voice_player.title"),
+            Some(WindowKind::Dashboard) | None => format!(
                 "{} — {}",
                 self.i18n.t("app.title"),
                 self.i18n.t("app.subtitle")
-            )
+            ),
         }
+    }
+
+    fn window_role(&self, target: window::Id) -> Option<WindowKind> {
+        classify_window_role(
+            target,
+            self.dashboard_id,
+            self.modal_id,
+            self.snip_id,
+            self.hud_id,
+            self.voice_player_id,
+        )
     }
 
     fn theme(&self, _window: window::Id) -> Theme {
@@ -448,28 +493,27 @@ impl LanghianApp {
             Message::Bridge(BridgeEvent::Tray(act)) => self.handle_tray_action(act),
 
             Message::WindowOpened(kind, id) => {
-                match kind {
-                    WindowKind::Dashboard => {
-                        self.dashboard_opening = false;
-                        if let Some(existing) = self.dashboard_id {
-                            return Task::batch([window::close(id), window::gain_focus(existing)]);
-                        }
-                        self.dashboard_id = Some(id);
-                    }
-                    WindowKind::Modal => {
-                        self.modal_id = Some(id);
-                        self.modal_opened_at = Some(Instant::now());
-                        self.modal_has_focused = false;
-                        self.modal_user_dragged = false;
-                        return window::gain_focus(id);
-                    }
-                    WindowKind::Snip => self.snip_id = Some(id),
-                    WindowKind::Hud => self.hud_id = Some(id),
-                    WindowKind::VoicePlayer => {
-                        self.voice_player_id = Some(id);
-                        self.voice_player_opened_at = Some(Instant::now());
-                        self.voice_player_user_dragged = false;
-                    }
+                // Verify synchronous ownership: if a floating/transient window was superseded or
+                // dismissed before WindowOpened arrived, close this orphan id immediately.
+                let still_expected = match kind {
+                    WindowKind::Dashboard => self.dashboard_id == Some(id),
+                    WindowKind::Modal => self.modal_id == Some(id),
+                    WindowKind::Snip => self.snip_id == Some(id),
+                    WindowKind::Hud => self.hud_id == Some(id),
+                    WindowKind::VoicePlayer => self.voice_player_id == Some(id),
+                };
+                if !still_expected {
+                    return window::close(id);
+                }
+                if kind == WindowKind::Modal {
+                    self.modal_opened_at = Some(Instant::now());
+                    self.modal_has_focused = false;
+                    self.modal_user_dragged = false;
+                    return window::gain_focus(id);
+                }
+                if kind == WindowKind::VoicePlayer {
+                    self.voice_player_opened_at = Some(Instant::now());
+                    self.voice_player_user_dragged = false;
                 }
                 Task::none()
             }
@@ -639,7 +683,112 @@ impl LanghianApp {
                     self.config.modal_pinned,
                     &self.config.native_language,
                 );
-                self.open_or_update_modal(modal, TranslationMode::Modal, anchor_phys, cursor_phys)
+                self.open_or_update_modal(
+                    modal,
+                    TranslationMode::Modal,
+                    false,
+                    anchor_phys,
+                    cursor_phys,
+                )
+            }
+
+            Message::DoubleShiftCaptured {
+                target_hwnd,
+                anchor_phys,
+                cursor_phys,
+                result,
+            } => {
+                let captured = match result {
+                    Ok(c) => c,
+                    Err(_) => {
+                        if self.config.show_hud {
+                            return self.show_hud_toast(
+                                self.i18n.t("app.status_error"),
+                                Some(self.i18n.t("errors.empty_selection")),
+                                true,
+                            );
+                        }
+                        return Task::none();
+                    }
+                };
+                self.pending_target_hwnd = target_hwnd;
+                self.pending_replace_prev_clip = captured.previous_clipboard;
+                let modal = ModalState::for_text(
+                    captured.text,
+                    self.config.modal_pinned,
+                    &self.config.native_language,
+                );
+                self.open_or_update_modal(
+                    modal,
+                    TranslationMode::Modal,
+                    true,
+                    anchor_phys,
+                    cursor_phys,
+                )
+            }
+
+            Message::ModalVoiceGenerated { seq, result } => {
+                if seq != self.voice_gen_seq {
+                    return Task::none();
+                }
+                let Some(modal) = self.modal.as_mut() else {
+                    return Task::none();
+                };
+                modal.voice_generating = false;
+                match result {
+                    Ok((audio, voice_used)) => {
+                        self.audio_player.stop();
+                        self.mark_all_audio_stopped();
+                        match self.audio_player.play(&audio) {
+                            Ok(()) => {
+                                if let Some(m) = self.modal.as_mut() {
+                                    m.voice_is_playing = true;
+                                    m.voice_used = Some(voice_used);
+                                    m.voice_audio = Some(audio);
+                                }
+                                Task::none()
+                            }
+                            Err(err) => self.show_hud_toast(
+                                self.i18n.t("app.status_error"),
+                                Some(err),
+                                true,
+                            ),
+                        }
+                    }
+                    Err(err) => {
+                        self.show_hud_toast(self.i18n.t("app.status_error"), Some(err), true)
+                    }
+                }
+            }
+
+            Message::ManualVoiceGenerated { seq, result } => {
+                if seq != self.voice_gen_seq {
+                    return Task::none();
+                }
+                self.dashboard.manual_voice_generating = false;
+                match result {
+                    Ok((audio, voice_used)) => {
+                        self.audio_player.stop();
+                        self.mark_all_audio_stopped();
+                        match self.audio_player.play(&audio) {
+                            Ok(()) => {
+                                self.dashboard.manual_voice_playing = true;
+                                self.dashboard.manual_voice_used = Some(voice_used);
+                                self.dashboard.manual_voice_audio = Some(audio);
+                                self.dashboard.translate_error = None;
+                            }
+                            Err(err) => {
+                                self.dashboard.manual_voice_playing = false;
+                                self.dashboard.translate_error = Some(err);
+                            }
+                        }
+                    }
+                    Err(err) => {
+                        self.dashboard.manual_voice_playing = false;
+                        self.dashboard.translate_error = Some(err);
+                    }
+                }
+                Task::none()
             }
 
             Message::GlobalEscPressed => {
@@ -653,6 +802,7 @@ impl LanghianApp {
                     self.audio_player.stop();
                     self.mark_all_audio_stopped();
                     self.translation_seq = self.translation_seq.wrapping_add(1);
+                    self.voice_gen_seq = self.voice_gen_seq.wrapping_add(1);
                     if self.modal_id.is_none() {
                         self.modal = None;
                     }
@@ -669,6 +819,7 @@ impl LanghianApp {
                 self.audio_player.stop();
                 self.mark_all_audio_stopped();
                 self.translation_seq = self.translation_seq.wrapping_add(1);
+                self.voice_gen_seq = self.voice_gen_seq.wrapping_add(1);
                 if self.modal_id.is_none() {
                     self.modal = None;
                 }
@@ -800,7 +951,6 @@ impl LanghianApp {
                         modal.is_vision_error = false;
                         modal.copied_output = false;
                         modal.voice_used = outcome.voice_used;
-                        modal.show_voice_transcript = false;
 
                         if let Some(audio) = outcome.voice_audio {
                             self.audio_player.stop();
@@ -1057,51 +1207,62 @@ impl LanghianApp {
     }
 
     fn view(&self, window: window::Id) -> Element<'_, Message> {
-        if Some(window) == self.modal_id
-            && let Some(modal) = &self.modal
-        {
-            return view_modal(
-                modal,
-                &self.config,
-                &self.i18n,
-                &self.vocab,
-                &self.vocab_matcher,
-            )
-            .map(Message::Modal);
-        }
-        if Some(window) == self.snip_id
-            && let Some(snip) = &self.snip
-        {
-            return view_snip_overlay(
-                snip,
-                format!("{} · Esc", self.i18n.t("translate.screenshot_btn")),
-                Message::Snip,
-            );
-        }
-        if Some(window) == self.hud_id
-            && let Some(hud) = &self.hud
-        {
-            let on_cancel = hud.is_loading.then_some(Message::CancelVoiceGeneration);
-            return view_hud(hud, self.config.theme, &self.i18n, on_cancel);
-        }
-        if Some(window) == self.voice_player_id
-            && let Some(vp) = &self.voice_player
-        {
-            return view_voice_player(vp, self.config.theme, &self.i18n).map(Message::VoicePlayer);
+        match self.window_role(window) {
+            Some(WindowKind::Modal) => {
+                if let Some(modal) = &self.modal {
+                    return view_modal(
+                        modal,
+                        &self.config,
+                        &self.i18n,
+                        &self.vocab,
+                        &self.vocab_matcher,
+                    )
+                    .map(Message::Modal);
+                }
+            }
+            Some(WindowKind::Snip) => {
+                if let Some(snip) = &self.snip {
+                    return view_snip_overlay(
+                        snip,
+                        format!("{} · Esc", self.i18n.t("translate.screenshot_btn")),
+                        Message::Snip,
+                    );
+                }
+            }
+            Some(WindowKind::Hud) => {
+                if let Some(hud) = &self.hud {
+                    let on_cancel = hud.is_loading.then_some(Message::CancelVoiceGeneration);
+                    return view_hud(hud, self.config.theme, &self.i18n, on_cancel);
+                }
+            }
+            Some(WindowKind::VoicePlayer) => {
+                if let Some(vp) = &self.voice_player {
+                    return view_voice_player(vp, self.config.theme, &self.i18n)
+                        .map(Message::VoicePlayer);
+                }
+            }
+            Some(WindowKind::Dashboard) => {
+                let content: Element<'_, DashboardMsg> = container(view_dashboard(
+                    &self.dashboard,
+                    &self.config,
+                    &self.vocab,
+                    &self.history,
+                    &self.i18n,
+                    &self.vocab_matcher,
+                ))
+                .width(iced::Length::Fill)
+                .height(iced::Length::Fill)
+                .into();
+                return content.map(Message::Dashboard);
+            }
+            None => {}
         }
 
-        let content: Element<'_, DashboardMsg> = container(view_dashboard(
-            &self.dashboard,
-            &self.config,
-            &self.vocab,
-            &self.history,
-            &self.i18n,
-            &self.vocab_matcher,
-        ))
-        .width(iced::Length::Fill)
-        .height(iced::Length::Fill)
-        .into();
-        content.map(Message::Dashboard)
+        // Unowned or closing/initializing transient window IDs must NEVER render the dashboard chrome.
+        container(iced::widget::Space::new())
+            .width(iced::Length::Fill)
+            .height(iced::Length::Fill)
+            .into()
     }
 
     fn handle_window_close(&mut self, id: window::Id) -> Task<Message> {
@@ -1124,7 +1285,6 @@ impl LanghianApp {
         }
         if Some(id) == self.dashboard_id {
             self.dashboard_id = None;
-            self.dashboard_opening = false;
             self.dashboard.is_maximized = false;
             return window::close(id);
         }
@@ -1134,6 +1294,7 @@ impl LanghianApp {
     fn close_modal(&mut self) -> Task<Message> {
         self.audio_player.stop();
         self.mark_all_audio_stopped();
+        self.voice_gen_seq = self.voice_gen_seq.wrapping_add(1);
         self.pending_voice_launch = None;
         self.modal = None;
         self.modal_opened_at = None;
@@ -1229,6 +1390,7 @@ impl LanghianApp {
         match action {
             InputAction::DoubleTapAlt => self.run_double_alt_inplace(),
             InputAction::DoubleTapCtrl => self.run_double_ctrl_modal(),
+            InputAction::DoubleTapShift => self.run_double_shift_voice(),
             InputAction::ScreenshotTranslate => self.start_screenshot_capture(),
             InputAction::NextPrompt => self.cycle_prompt(1),
             InputAction::PrevPrompt => self.cycle_prompt(-1),
@@ -1262,6 +1424,13 @@ impl LanghianApp {
                 self.rebuild_tray();
                 Task::none()
             }
+            TrayAction::SelectVisionModel(id) => {
+                self.config.active_vision_model_id = Some(id);
+                self.config.ensure_valid();
+                let _ = self.storage.save_config(&self.config);
+                self.rebuild_tray();
+                Task::none()
+            }
             TrayAction::SelectPrompt(id) => {
                 self.config.active_prompt_id = id;
                 let _ = self.storage.save_config(&self.config);
@@ -1283,11 +1452,10 @@ impl LanghianApp {
     fn ensure_dashboard_open(&mut self) -> Task<Message> {
         if let Some(id) = self.dashboard_id {
             window::gain_focus(id)
-        } else if self.dashboard_opening {
-            Task::none()
         } else {
-            self.dashboard_opening = true;
-            open_dashboard_task(self.app_icon.clone())
+            let (id, task) = open_dashboard_task(self.app_icon.clone());
+            self.dashboard_id = Some(id);
+            task
         }
     }
 
@@ -1333,6 +1501,29 @@ impl LanghianApp {
         )
     }
 
+    fn run_double_shift_voice(&mut self) -> Task<Message> {
+        let target_hwnd = capture_foreground_handle();
+        let cursor_phys = current_cursor_pos();
+        let anchor_phys = active_selection_anchor_phys(target_hwnd, cursor_phys);
+        let restore_clip = self.config.restore_clipboard;
+        let prefer_markdown = self.config.preserve_markdown;
+        Task::perform(
+            async move {
+                tokio::task::spawn_blocking(move || {
+                    capture_selection(restore_clip, false, prefer_markdown)
+                })
+                .await
+                .unwrap_or_else(|e| Err(e.to_string()))
+            },
+            move |result| Message::DoubleShiftCaptured {
+                target_hwnd,
+                anchor_phys,
+                cursor_phys,
+                result,
+            },
+        )
+    }
+
     fn start_screenshot_capture(&mut self) -> Task<Message> {
         let cursor = current_cursor_pos();
         let screen = match capture_active_monitor(cursor) {
@@ -1350,7 +1541,7 @@ impl LanghianApp {
             return window::gain_focus(existing);
         }
 
-        let (_, open) = window::open(window::Settings {
+        let (id, open) = window::open(window::Settings {
             size,
             position: window::Position::Specific(pos),
             decorations: false,
@@ -1361,6 +1552,7 @@ impl LanghianApp {
             platform_specific: floating_platform_specific(),
             ..Default::default()
         });
+        self.snip_id = Some(id);
         open.map(|id| Message::WindowOpened(WindowKind::Snip, id))
     }
 
@@ -1368,16 +1560,17 @@ impl LanghianApp {
         &mut self,
         modal: ModalState,
         mode: TranslationMode,
+        with_voice: bool,
         anchor_phys: Option<(i32, i32, i32)>,
         cursor_phys: Option<(i32, i32)>,
     ) -> Task<Message> {
         self.audio_player.stop();
         self.mark_all_audio_stopped();
         self.modal = Some(modal);
-        let translate_task = self.dispatch_modal_translation(mode);
+        let translate_task = self.dispatch_modal_translation(mode, with_voice);
         let immediate_error = self.modal.as_ref().and_then(|m| m.error_message.clone());
 
-        if self.config.voice_translation_enabled && self.modal_id.is_none() {
+        if with_voice && self.modal_id.is_none() {
             if let Some(err) = immediate_error {
                 self.modal = None;
                 self.pending_voice_launch = None;
@@ -1416,7 +1609,7 @@ impl LanghianApp {
             return Task::batch([window::move_to(id, pos_pt), window::minimize(id, false)]);
         }
 
-        let (_, open) = window::open(window::Settings {
+        let (id, open) = window::open(window::Settings {
             size: Size::new(PLAYER_W, PLAYER_H),
             position: window::Position::Specific(pos_pt),
             decorations: false,
@@ -1428,6 +1621,9 @@ impl LanghianApp {
             platform_specific: dashboard_platform_specific(),
             ..Default::default()
         });
+        self.voice_player_id = Some(id);
+        self.voice_player_opened_at = Some(Instant::now());
+        self.voice_player_user_dragged = false;
 
         open.map(|id| Message::WindowOpened(WindowKind::VoicePlayer, id))
     }
@@ -1452,7 +1648,7 @@ impl LanghianApp {
             return Task::batch([window::move_to(id, pos_pt), window::gain_focus(id)]);
         }
 
-        let (_, open) = window::open(window::Settings {
+        let (id, open) = window::open(window::Settings {
             size: Size::new(modal_w, modal_h),
             min_size: Some(Size::new(420.0, 320.0)),
             position: window::Position::Specific(pos_pt),
@@ -1464,6 +1660,10 @@ impl LanghianApp {
             platform_specific: floating_platform_specific(),
             ..Default::default()
         });
+        self.modal_id = Some(id);
+        self.modal_opened_at = Some(Instant::now());
+        self.modal_has_focused = false;
+        self.modal_user_dragged = false;
 
         open.map(|id| Message::WindowOpened(WindowKind::Modal, id))
     }
@@ -1526,18 +1726,42 @@ impl LanghianApp {
     fn resolve_translation_pipeline(
         &self,
         requires_vision: bool,
+        with_voice: bool,
     ) -> Result<ResolvedTranslationPipeline, TranslationFail> {
         let vision_msg = self.i18n.t("errors.vision_unsupported");
         let audio_msg = self.i18n.t("errors.audio_unsupported");
-        let base_profile = self.config.active_model().clone();
 
-        if !self.config.voice_translation_enabled {
-            if requires_vision && !base_profile.supports_vision {
+        if requires_vision {
+            let Some(vis_profile) = self.config.resolved_vision_model().cloned() else {
                 return Err(TranslationFail {
                     is_vision: true,
                     message: vision_msg,
                 });
-            }
+            };
+            let key = self.secrets.get_api_key(&vis_profile.id);
+            let voice = if with_voice {
+                let Some(vp) = self.config.resolved_voice_model().cloned() else {
+                    return Err(TranslationFail {
+                        is_vision: false,
+                        message: audio_msg,
+                    });
+                };
+                let vk = self.secrets.get_api_key(&vp.id);
+                let vn = resolve_voice_for_profile(&vp, &self.config.voice_name);
+                Some((vp, vk, vn))
+            } else {
+                None
+            };
+            return Ok(ResolvedTranslationPipeline {
+                text_profile: vis_profile,
+                text_key: key,
+                voice,
+            });
+        }
+
+        let base_profile = self.config.active_model().clone();
+
+        if !with_voice {
             let key = self.secrets.get_api_key(&base_profile.id);
             return Ok(ResolvedTranslationPipeline {
                 text_profile: base_profile,
@@ -1559,14 +1783,7 @@ impl LanghianApp {
             });
         }
 
-        let (text_profile, text_key) =
-            self.resolve_text_profile_for_voice(base_profile, requires_vision);
-        if requires_vision && !text_profile.supports_vision {
-            return Err(TranslationFail {
-                is_vision: true,
-                message: vision_msg,
-            });
-        }
+        let (text_profile, text_key) = self.resolve_text_profile_for_voice(base_profile, false);
 
         let voice_key = self.secrets.get_api_key(&voice_profile.id);
         let voice_name = resolve_voice_for_profile(&voice_profile, &self.config.voice_name);
@@ -1577,12 +1794,15 @@ impl LanghianApp {
         })
     }
 
-    fn dispatch_modal_translation(&mut self, mode: TranslationMode) -> Task<Message> {
+    fn dispatch_modal_translation(
+        &mut self,
+        mode: TranslationMode,
+        with_voice: bool,
+    ) -> Task<Message> {
         let vision_msg = self.i18n.t("errors.vision_unsupported");
         let key_msg = self.i18n.t("errors.missing_api_key");
         let rate_msg = self.i18n.t("errors.rate_limited");
         let audio_msg = self.i18n.t("errors.audio_unsupported");
-        let voice_enabled = self.config.voice_translation_enabled;
 
         let Some((src_text, screenshot_png)) = self
             .modal
@@ -1620,17 +1840,17 @@ impl LanghianApp {
                 )
             };
 
-        let pipeline = self.resolve_translation_pipeline(requires_vision);
+        let pipeline = self.resolve_translation_pipeline(requires_vision, with_voice);
         let Some(modal) = self.modal.as_mut() else {
             return Task::none();
         };
         modal.effective_target_lang = effective_target.clone();
         modal.was_auto_reversed = was_auto_reversed;
-        modal.voice_mode = voice_enabled;
+        modal.voice_mode = with_voice;
         modal.voice_audio = None;
         modal.voice_used = None;
         modal.voice_is_playing = false;
-        modal.show_voice_transcript = false;
+        modal.voice_generating = false;
 
         let pipeline = match pipeline {
             Ok(parts) => parts,
@@ -1733,7 +1953,7 @@ impl LanghianApp {
             return window::move_to(id, pos_pt);
         }
 
-        let (_, open) = window::open(window::Settings {
+        let (id, open) = window::open(window::Settings {
             size: Size::new(460.0, 56.0),
             position: window::Position::Specific(pos_pt),
             decorations: false,
@@ -1744,6 +1964,7 @@ impl LanghianApp {
             platform_specific: floating_platform_specific(),
             ..Default::default()
         });
+        self.hud_id = Some(id);
         open.map(|id| Message::WindowOpened(WindowKind::Hud, id))
     }
 
@@ -1832,6 +2053,7 @@ impl LanghianApp {
                         let modal_task = self.open_or_update_modal(
                             modal,
                             TranslationMode::Screenshot,
+                            false,
                             None,
                             cursor_phys,
                         );
@@ -1911,7 +2133,7 @@ impl LanghianApp {
                 }
                 Task::none()
             }
-            ModalMsg::TranslateOrRegenerate => self.dispatch_modal_translation(current_mode),
+            ModalMsg::TranslateOrRegenerate => self.dispatch_modal_translation(current_mode, false),
             ModalMsg::CopySource => {
                 if let Some(m) = self.modal.as_mut()
                     && !m.source_text.trim().is_empty()
@@ -1952,10 +2174,15 @@ impl LanghianApp {
                 Task::none()
             }
             ModalMsg::SwitchToModel(id) => {
-                self.config.active_model_id = id;
+                if current_mode == TranslationMode::Screenshot {
+                    self.config.active_vision_model_id = Some(id);
+                } else {
+                    self.config.active_model_id = id;
+                }
+                self.config.ensure_valid();
                 let _ = self.storage.save_config(&self.config);
                 self.rebuild_tray();
-                self.dispatch_modal_translation(current_mode)
+                self.dispatch_modal_translation(current_mode, false)
             }
             ModalMsg::ClickVocabHighlight(entry) => {
                 if let Some(m) = self.modal.as_mut() {
@@ -1974,32 +2201,78 @@ impl LanghianApp {
                 self.ensure_dashboard_open()
             }
             ModalMsg::PlayAudio => {
-                if let Some(m) = self.modal.as_mut()
-                    && let Some(audio) = m.voice_audio.as_ref()
-                {
+                let cached = self.modal.as_ref().and_then(|m| m.voice_audio.clone());
+                if let Some(audio) = cached {
                     self.audio_player.stop();
-                    self.dashboard.manual_voice_playing = false;
-                    match self.audio_player.play(audio) {
-                        Ok(()) => m.voice_is_playing = true,
-                        Err(e) => {
-                            m.voice_is_playing = false;
-                            m.error_message = Some(e);
+                    self.mark_all_audio_stopped();
+                    if let Some(m) = self.modal.as_mut() {
+                        match self.audio_player.play(&audio) {
+                            Ok(()) => m.voice_is_playing = true,
+                            Err(e) => {
+                                m.voice_is_playing = false;
+                                m.error_message = Some(e);
+                            }
                         }
                     }
+                    return Task::none();
                 }
-                Task::none()
+
+                let Some((translated_text, already_generating)) = self
+                    .modal
+                    .as_ref()
+                    .map(|m| (m.translated_text.clone(), m.voice_generating))
+                else {
+                    return Task::none();
+                };
+                if translated_text.trim().is_empty() || already_generating {
+                    return Task::none();
+                }
+
+                let Some(voice_profile) = self.config.resolved_voice_model().cloned() else {
+                    return self.show_hud_toast(
+                        self.i18n.t("app.status_error"),
+                        Some(self.i18n.t("errors.audio_unsupported")),
+                        true,
+                    );
+                };
+                let voice_key = self.secrets.get_api_key(&voice_profile.id);
+                let voice_name = resolve_voice_for_profile(&voice_profile, &self.config.voice_name);
+
+                self.voice_gen_seq = self.voice_gen_seq.wrapping_add(1);
+                let seq = self.voice_gen_seq;
+                if let Some(m) = self.modal.as_mut() {
+                    m.voice_generating = true;
+                }
+
+                let client = self.client.clone();
+                let key_msg = self.i18n.t("errors.missing_api_key");
+                let audio_msg = self.i18n.t("errors.audio_unsupported");
+                let rate_msg = self.i18n.t("errors.rate_limited");
+                Task::perform(
+                    async move {
+                        client
+                            .synthesize_speech(
+                                &voice_profile,
+                                voice_key.as_deref(),
+                                &translated_text,
+                                &voice_name,
+                            )
+                            .await
+                            .map_err(|e| match e {
+                                ProviderError::MissingApiKey { .. } => key_msg,
+                                ProviderError::AudioUnsupported { .. } => audio_msg,
+                                ProviderError::RateLimited => rate_msg,
+                                other => other.to_string(),
+                            })
+                    },
+                    move |result| Message::ModalVoiceGenerated { seq, result },
+                )
             }
             ModalMsg::StopAudio => {
                 self.audio_player.stop();
                 self.dashboard.manual_voice_playing = false;
                 if let Some(m) = self.modal.as_mut() {
                     m.voice_is_playing = false;
-                }
-                Task::none()
-            }
-            ModalMsg::ToggleVoiceTranscript => {
-                if let Some(m) = self.modal.as_mut() {
-                    m.show_voice_transcript = !m.show_voice_transcript;
                 }
                 Task::none()
             }
@@ -2135,6 +2408,7 @@ impl LanghianApp {
                 self.audio_player.stop();
                 self.dashboard.manual_voice_audio = None;
                 self.dashboard.manual_voice_playing = false;
+                self.dashboard.manual_voice_generating = false;
                 self.dashboard.manual_voice_used = None;
                 Task::none()
             }
@@ -2156,7 +2430,9 @@ impl LanghianApp {
                     return Task::none();
                 }
                 self.audio_player.stop();
+                self.voice_gen_seq = self.voice_gen_seq.wrapping_add(1);
                 self.dashboard.manual_voice_playing = false;
+                self.dashboard.manual_voice_generating = false;
                 self.dashboard.manual_voice_audio = None;
                 self.dashboard.manual_voice_used = None;
                 self.translation_seq = self.translation_seq.wrapping_add(1);
@@ -2186,7 +2462,7 @@ impl LanghianApp {
                 self.dashboard.manual_auto_reversed = was_auto_reversed;
                 self.dashboard.manual_effective_target = Some(effective_target.clone());
 
-                let pipeline = match self.resolve_translation_pipeline(false) {
+                let pipeline = match self.resolve_translation_pipeline(false, false) {
                     Ok(parts) => parts,
                     Err(fail) => {
                         self.dashboard.is_translating = false;
@@ -2241,8 +2517,48 @@ impl LanghianApp {
                             self.dashboard.translate_error = Some(e);
                         }
                     }
+                    return Task::none();
                 }
-                Task::none()
+
+                let translated = self.dashboard.manual_output.clone();
+                if translated.trim().is_empty() || self.dashboard.manual_voice_generating {
+                    return Task::none();
+                }
+
+                let Some(voice_profile) = self.config.resolved_voice_model().cloned() else {
+                    self.dashboard.translate_error = Some(self.i18n.t("errors.audio_unsupported"));
+                    return Task::none();
+                };
+                let voice_key = self.secrets.get_api_key(&voice_profile.id);
+                let voice_name = resolve_voice_for_profile(&voice_profile, &self.config.voice_name);
+                self.voice_gen_seq = self.voice_gen_seq.wrapping_add(1);
+                let seq = self.voice_gen_seq;
+                self.dashboard.manual_voice_generating = true;
+                self.dashboard.translate_error = None;
+
+                let client = self.client.clone();
+                let key_msg = self.i18n.t("errors.missing_api_key");
+                let audio_msg = self.i18n.t("errors.audio_unsupported");
+                let rate_msg = self.i18n.t("errors.rate_limited");
+                Task::perform(
+                    async move {
+                        client
+                            .synthesize_speech(
+                                &voice_profile,
+                                voice_key.as_deref(),
+                                &translated,
+                                &voice_name,
+                            )
+                            .await
+                            .map_err(|e| match e {
+                                ProviderError::MissingApiKey { .. } => key_msg,
+                                ProviderError::AudioUnsupported { .. } => audio_msg,
+                                ProviderError::RateLimited => rate_msg,
+                                other => other.to_string(),
+                            })
+                    },
+                    move |result| Message::ManualVoiceGenerated { seq, result },
+                )
             }
             DashboardMsg::StopManualVoice => {
                 self.audio_player.stop();
@@ -2380,6 +2696,11 @@ impl LanghianApp {
                     let mut copy = m;
                     copy.id = uuid_v4();
                     copy.name = format!("{} (Copy)", copy.name);
+                    if let Some(key) = self.secrets.get_api_key(&id)
+                        && !key.trim().is_empty()
+                    {
+                        let _ = self.secrets.set_api_key(&copy.id, &key);
+                    }
                     self.config.models.push(copy);
                     let _ = self.storage.save_config(&self.config);
                     self.rebuild_tray();
@@ -2590,6 +2911,12 @@ impl LanghianApp {
                     },
                     Message::FetchModelsFinished,
                 )
+            }
+            DashboardMsg::ToggleModelAdvanced => {
+                if let Some(ed) = self.dashboard.model_editor.as_mut() {
+                    ed.show_advanced = !ed.show_advanced;
+                }
+                Task::none()
             }
             DashboardMsg::SaveModelProfile => {
                 let Some(ed) = self.dashboard.model_editor.take() else {
@@ -2836,6 +3163,11 @@ impl LanghianApp {
                 self.sync_shortcuts_and_save();
                 Task::none()
             }
+            DashboardMsg::ToggleDoubleShift(v) => {
+                self.config.shortcuts.enable_double_shift = v;
+                self.sync_shortcuts_and_save();
+                Task::none()
+            }
             DashboardMsg::DoubleTapMsChanged(v) => {
                 self.dashboard.double_tap_ms_input = v.clone();
                 if let Ok(ms) = v.trim().parse::<u64>() {
@@ -2885,28 +3217,20 @@ impl LanghianApp {
                 let _ = self.storage.save_config(&self.config);
                 Task::none()
             }
-            DashboardMsg::ToggleVoiceTranslation(v) => {
-                self.config.voice_translation_enabled = v;
-                if v {
-                    self.dashboard.settings_error = None;
-                } else {
-                    self.audio_player.stop();
-                    self.mark_all_audio_stopped();
-                    self.pending_voice_launch = None;
-                    let close_vp = self.close_voice_player();
-                    let dismiss_hud = self.dismiss_loading_hud();
-                    let _ = self.storage.save_config(&self.config);
-                    return Task::batch([close_vp, dismiss_hud]);
-                }
-                let _ = self.storage.save_config(&self.config);
-                Task::none()
-            }
             DashboardMsg::SelectVoiceModel(id) => {
                 self.config.active_voice_model_id = id;
                 if let Some(vp) = self.config.resolved_voice_model().cloned() {
                     self.config.voice_name =
                         resolve_voice_for_profile(&vp, &self.config.voice_name);
                 }
+                self.config.ensure_valid();
+                self.dashboard.settings_error = None;
+                let _ = self.storage.save_config(&self.config);
+                self.rebuild_tray();
+                Task::none()
+            }
+            DashboardMsg::SelectVisionModel(id) => {
+                self.config.active_vision_model_id = id;
                 self.config.ensure_valid();
                 self.dashboard.settings_error = None;
                 let _ = self.storage.save_config(&self.config);
@@ -3190,8 +3514,8 @@ fn dashboard_platform_specific() -> window::settings::PlatformSpecific {
     }
 }
 
-fn open_dashboard_task(icon: Option<window::Icon>) -> Task<Message> {
-    let (_, open) = window::open(window::Settings {
+fn open_dashboard_task(icon: Option<window::Icon>) -> (window::Id, Task<Message>) {
+    let (id, open) = window::open(window::Settings {
         size: Size::new(1060.0, 720.0),
         min_size: Some(Size::new(900.0, 600.0)),
         position: window::Position::Centered,
@@ -3202,7 +3526,10 @@ fn open_dashboard_task(icon: Option<window::Icon>) -> Task<Message> {
         platform_specific: dashboard_platform_specific(),
         ..Default::default()
     });
-    open.map(|id| Message::WindowOpened(WindowKind::Dashboard, id))
+    (
+        id,
+        open.map(|id| Message::WindowOpened(WindowKind::Dashboard, id)),
+    )
 }
 
 fn bridge_stream() -> impl iced::futures::Stream<Item = BridgeEvent> {
@@ -3372,4 +3699,35 @@ fn rand_mix() -> u64 {
     use std::sync::atomic::{AtomicU64, Ordering};
     static COUNTER: AtomicU64 = AtomicU64::new(0x517cc1b727220a95);
     COUNTER.fetch_add(0x9e3779b97f4a7c15, Ordering::Relaxed)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn transient_and_orphan_windows_never_classify_as_dashboard() {
+        let hud = window::Id::unique();
+        let orphan = window::Id::unique();
+        let dash = window::Id::unique();
+
+        assert_eq!(
+            classify_window_role(hud, None, None, None, Some(hud), None),
+            Some(WindowKind::Hud)
+        );
+        // When dashboard_id is None (--minimized startup), unknown/initializing IDs must be None.
+        assert_eq!(
+            classify_window_role(orphan, None, None, None, Some(hud), None),
+            None
+        );
+        // When dashboard_id is closed or dismissed HUD clears hud_id, old hud ID does not fall through to Dashboard.
+        assert_eq!(
+            classify_window_role(hud, Some(dash), None, None, None, None),
+            None
+        );
+        assert_eq!(
+            classify_window_role(dash, Some(dash), None, None, Some(hud), None),
+            Some(WindowKind::Dashboard)
+        );
+    }
 }

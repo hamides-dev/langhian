@@ -5,12 +5,14 @@ use std::time::{Duration, Instant};
 pub enum ModifierKind {
     Ctrl,
     Alt,
+    Shift,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum InputAction {
     DoubleTapAlt,
     DoubleTapCtrl,
+    DoubleTapShift,
     ScreenshotTranslate,
     NextPrompt,
     PrevPrompt,
@@ -31,10 +33,13 @@ pub struct InputStateMachine {
     double_tap_window: Duration,
     enable_double_alt: bool,
     enable_double_ctrl: bool,
+    enable_double_shift: bool,
     alt_down_clean: bool,
     ctrl_down_clean: bool,
+    shift_down_clean: bool,
     last_alt_tap: Option<Instant>,
     last_ctrl_tap: Option<Instant>,
+    last_shift_tap: Option<Instant>,
 }
 
 impl InputStateMachine {
@@ -43,10 +48,13 @@ impl InputStateMachine {
             double_tap_window: Duration::from_millis(config.double_tap_ms),
             enable_double_alt: config.enable_double_alt,
             enable_double_ctrl: config.enable_double_ctrl,
+            enable_double_shift: config.enable_double_shift,
             alt_down_clean: false,
             ctrl_down_clean: false,
+            shift_down_clean: false,
             last_alt_tap: None,
             last_ctrl_tap: None,
+            last_shift_tap: None,
         }
     }
 
@@ -54,11 +62,18 @@ impl InputStateMachine {
         self.double_tap_window = Duration::from_millis(config.double_tap_ms);
         self.enable_double_alt = config.enable_double_alt;
         self.enable_double_ctrl = config.enable_double_ctrl;
+        self.enable_double_shift = config.enable_double_shift;
     }
 
     pub fn on_modifier_down(&mut self, kind: ModifierKind, others: ModifierState) {
+        // Any new modifier press cancels in-flight/pending double-tap tracking for the other
+        // modifiers so chords like Alt+Shift or Ctrl+Shift (OS layout switching) never trigger.
         match kind {
             ModifierKind::Alt => {
+                self.ctrl_down_clean = false;
+                self.last_ctrl_tap = None;
+                self.shift_down_clean = false;
+                self.last_shift_tap = None;
                 if !others.ctrl && !others.shift && !others.meta {
                     self.alt_down_clean = true;
                 } else {
@@ -67,11 +82,27 @@ impl InputStateMachine {
                 }
             }
             ModifierKind::Ctrl => {
+                self.alt_down_clean = false;
+                self.last_alt_tap = None;
+                self.shift_down_clean = false;
+                self.last_shift_tap = None;
                 if !others.alt && !others.shift && !others.meta {
                     self.ctrl_down_clean = true;
                 } else {
                     self.ctrl_down_clean = false;
                     self.last_ctrl_tap = None;
+                }
+            }
+            ModifierKind::Shift => {
+                self.alt_down_clean = false;
+                self.last_alt_tap = None;
+                self.ctrl_down_clean = false;
+                self.last_ctrl_tap = None;
+                if !others.alt && !others.ctrl && !others.meta {
+                    self.shift_down_clean = true;
+                } else {
+                    self.shift_down_clean = false;
+                    self.last_shift_tap = None;
                 }
             }
         }
@@ -109,6 +140,21 @@ impl InputStateMachine {
                 self.last_ctrl_tap = Some(now);
                 None
             }
+            ModifierKind::Shift => {
+                let was_clean = self.shift_down_clean;
+                self.shift_down_clean = false;
+                if !was_clean || !self.enable_double_shift {
+                    return None;
+                }
+                if let Some(prev) = self.last_shift_tap
+                    && now.duration_since(prev) <= self.double_tap_window
+                {
+                    self.last_shift_tap = None;
+                    return Some(InputAction::DoubleTapShift);
+                }
+                self.last_shift_tap = Some(now);
+                None
+            }
         }
     }
 
@@ -121,8 +167,10 @@ impl InputStateMachine {
         // Any non-modifier key cancels pending standalone modifier tap detection.
         self.alt_down_clean = false;
         self.ctrl_down_clean = false;
+        self.shift_down_clean = false;
         self.last_alt_tap = None;
         self.last_ctrl_tap = None;
+        self.last_shift_tap = None;
 
         let upper = key_name.to_ascii_uppercase();
 
@@ -258,6 +306,51 @@ mod tests {
                 &cfg
             ),
             Some(InputAction::SwitchPromptSlot(3))
+        );
+    }
+
+    #[test]
+    fn clean_double_tap_shift_triggers_voice_translation() {
+        let cfg = ShortcutConfig::default();
+        let mut sm = InputStateMachine::new(&cfg);
+        let t0 = Instant::now();
+
+        sm.on_modifier_down(ModifierKind::Shift, ModifierState::default());
+        assert_eq!(sm.on_modifier_up(ModifierKind::Shift, t0), None);
+
+        sm.on_modifier_down(ModifierKind::Shift, ModifierState::default());
+        assert_eq!(
+            sm.on_modifier_up(ModifierKind::Shift, t0 + Duration::from_millis(160)),
+            Some(InputAction::DoubleTapShift)
+        );
+    }
+
+    #[test]
+    fn alt_shift_layout_switch_does_not_trigger_double_tap() {
+        let cfg = ShortcutConfig::default();
+        let mut sm = InputStateMachine::new(&cfg);
+        let t0 = Instant::now();
+
+        // First tap of Shift
+        sm.on_modifier_down(ModifierKind::Shift, ModifierState::default());
+        assert_eq!(sm.on_modifier_up(ModifierKind::Shift, t0), None);
+
+        // User switches Windows keyboard layout with Alt+Shift immediately afterward
+        sm.on_modifier_down(ModifierKind::Alt, ModifierState::default());
+        sm.on_modifier_down(
+            ModifierKind::Shift,
+            ModifierState {
+                alt: true,
+                ..Default::default()
+            },
+        );
+        assert_eq!(
+            sm.on_modifier_up(ModifierKind::Shift, t0 + Duration::from_millis(80)),
+            None
+        );
+        assert_eq!(
+            sm.on_modifier_up(ModifierKind::Alt, t0 + Duration::from_millis(90)),
+            None
         );
     }
 }

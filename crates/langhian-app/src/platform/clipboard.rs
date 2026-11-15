@@ -87,6 +87,32 @@ mod win_input {
         }
     }
 
+    /// Wait briefly until physical Ctrl/Alt/Shift keys settle after a double-tap before synthesizing Ctrl+C.
+    pub fn wait_for_modifiers_released(max_wait_ms: u64) {
+        use windows_sys::Win32::UI::Input::KeyboardAndMouse::VK_SHIFT;
+        let step = Duration::from_millis(8);
+        let max_iters = (max_wait_ms / 8).max(1);
+        for _ in 0..max_iters {
+            let any_down = [
+                VK_LMENU,
+                VK_RMENU,
+                VK_MENU,
+                VK_LCONTROL,
+                VK_RCONTROL,
+                VK_CONTROL,
+                VK_LSHIFT,
+                VK_RSHIFT,
+                VK_SHIFT,
+            ]
+            .iter()
+            .any(|&vk| unsafe { GetAsyncKeyState(vk as i32) as u16 & 0x8000 } != 0);
+            if !any_down {
+                break;
+            }
+            thread::sleep(step);
+        }
+    }
+
     /// Release any modifier keys that are not physically held down anymore (or lingering after double-tap).
     pub fn release_stray_modifiers() {
         let mods = [
@@ -243,20 +269,29 @@ pub fn capture_selection(
     let mut clipboard = Clipboard::new().map_err(|e| format!("Clipboard error: {e}"))?;
     let previous = clipboard.get_text().ok();
 
-    // Give the active app time to finalize double-tap Alt/Ctrl key-up before injecting Ctrl+C.
-    thread::sleep(Duration::from_millis(45));
+    // Give the active app time to finalize double-tap Alt/Ctrl/Shift key-up before injecting Ctrl+C.
+    #[cfg(target_os = "windows")]
+    win_input::wait_for_modifiers_released(80);
+    thread::sleep(Duration::from_millis(40));
 
     #[cfg(target_os = "windows")]
     let mut captured = {
         let seq_before = win_input::clipboard_sequence();
         win_input::simulate_copy();
-        let first = wait_for_sequence_change(&mut clipboard, seq_before, 20);
+        let mut first = wait_for_sequence_change(&mut clipboard, seq_before, 30);
+        if first.is_none() {
+            // One extra Ctrl+C retry helps first-focus targets (e.g. Electron / Telegram) settle.
+            thread::sleep(Duration::from_millis(30));
+            let seq_retry = win_input::clipboard_sequence();
+            win_input::simulate_copy();
+            first = wait_for_sequence_change(&mut clipboard, seq_retry, 20);
+        }
         if first.is_none() && allow_select_all_fallback {
             win_input::simulate_select_all();
             thread::sleep(Duration::from_millis(45));
             let seq_before_all = win_input::clipboard_sequence();
             win_input::simulate_copy();
-            wait_for_sequence_change(&mut clipboard, seq_before_all, 20)
+            wait_for_sequence_change(&mut clipboard, seq_before_all, 25)
         } else {
             first
         }

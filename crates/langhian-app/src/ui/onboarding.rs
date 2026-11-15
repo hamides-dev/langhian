@@ -362,6 +362,13 @@ fn view_step_capabilities<'a>(
             i18n.t("onboarding.cap_ctrl_desc"),
         ),
         cap_card(
+            UiIcon::VolumeUp,
+            "Shift",
+            "Shift",
+            i18n.t("onboarding.cap_shift_title"),
+            i18n.t("onboarding.cap_shift_desc"),
+        ),
+        cap_card(
             UiIcon::CropFree,
             "Ctrl+Shift",
             "X",

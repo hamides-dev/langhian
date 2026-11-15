@@ -17,6 +17,7 @@ pub enum TrayAction {
     ScreenshotTranslate,
     SelectModel(String),
     SelectVoiceModel(String),
+    SelectVisionModel(String),
     SelectPrompt(String),
     Quit,
 }
@@ -164,6 +165,19 @@ fn build_menu(
         let _ = voice_model_sub.append(&item);
     }
 
+    let vision_models: Vec<_> = config.models.iter().filter(|m| m.supports_vision).collect();
+    let vision_model_sub = Submenu::new(i18n.t("tray.vision_model"), !vision_models.is_empty());
+    let resolved_vision_id = config.resolved_vision_model().map(|m| m.id.as_str());
+    for m in &vision_models {
+        let checked = resolved_vision_id == Some(m.id.as_str());
+        let item = CheckMenuItem::new(&m.name, true, checked, None);
+        actions.insert(
+            item.id().clone(),
+            TrayAction::SelectVisionModel(m.id.clone()),
+        );
+        let _ = vision_model_sub.append(&item);
+    }
+
     let prompt_sub = Submenu::new(i18n.t("tray.active_prompt"), true);
     for p in &config.prompts {
         let label = match p.shortcut_slot {
@@ -183,6 +197,7 @@ fn build_menu(
         .map_err(|e| e.to_string())?;
     menu.append(&model_sub).map_err(|e| e.to_string())?;
     menu.append(&voice_model_sub).map_err(|e| e.to_string())?;
+    menu.append(&vision_model_sub).map_err(|e| e.to_string())?;
     menu.append(&prompt_sub).map_err(|e| e.to_string())?;
     menu.append(&PredefinedMenuItem::separator())
         .map_err(|e| e.to_string())?;

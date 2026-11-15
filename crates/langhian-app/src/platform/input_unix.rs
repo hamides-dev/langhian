@@ -74,11 +74,7 @@ fn handle_event(event: Event) {
         EventType::KeyPress(key) => match key {
             Key::Alt | Key::AltGr => on_mod_down(shared, ModifierKind::Alt),
             Key::ControlLeft | Key::ControlRight => on_mod_down(shared, ModifierKind::Ctrl),
-            Key::ShiftLeft | Key::ShiftRight => {
-                if let Ok(mut m) = shared.mods.lock() {
-                    m.shift = true;
-                }
-            }
+            Key::ShiftLeft | Key::ShiftRight => on_mod_down(shared, ModifierKind::Shift),
             Key::MetaLeft | Key::MetaRight => {
                 if let Ok(mut m) = shared.mods.lock() {
                     m.meta = true;
@@ -98,11 +94,7 @@ fn handle_event(event: Event) {
         EventType::KeyRelease(key) => match key {
             Key::Alt | Key::AltGr => on_mod_up(shared, ModifierKind::Alt),
             Key::ControlLeft | Key::ControlRight => on_mod_up(shared, ModifierKind::Ctrl),
-            Key::ShiftLeft | Key::ShiftRight => {
-                if let Ok(mut m) = shared.mods.lock() {
-                    m.shift = false;
-                }
-            }
+            Key::ShiftLeft | Key::ShiftRight => on_mod_up(shared, ModifierKind::Shift),
             Key::MetaLeft | Key::MetaRight => {
                 if let Ok(mut m) = shared.mods.lock() {
                     m.meta = false;
@@ -122,6 +114,7 @@ fn on_mod_down(shared: &UnixHookState, kind: ModifierKind) {
         let already_down = match kind {
             ModifierKind::Alt => std::mem::replace(&mut m.alt, true),
             ModifierKind::Ctrl => std::mem::replace(&mut m.ctrl, true),
+            ModifierKind::Shift => std::mem::replace(&mut m.shift, true),
         };
         if already_down {
             return;
@@ -129,6 +122,7 @@ fn on_mod_down(shared: &UnixHookState, kind: ModifierKind) {
         match kind {
             ModifierKind::Alt => ModifierState { alt: false, ..*m },
             ModifierKind::Ctrl => ModifierState { ctrl: false, ..*m },
+            ModifierKind::Shift => ModifierState { shift: false, ..*m },
         }
     };
     if let Ok(mut sm) = shared.sm.lock() {
@@ -141,6 +135,7 @@ fn on_mod_up(shared: &UnixHookState, kind: ModifierKind) {
         match kind {
             ModifierKind::Alt => m.alt = false,
             ModifierKind::Ctrl => m.ctrl = false,
+            ModifierKind::Shift => m.shift = false,
         }
     }
     if let Ok(mut sm) = shared.sm.lock()

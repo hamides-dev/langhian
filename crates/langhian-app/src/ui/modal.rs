@@ -1,9 +1,9 @@
-use crate::ui::icons::{UiIcon, app_logo, ui_icon};
+use crate::ui::icons::{ProviderLogoKind, UiIcon, app_logo, provider_logo, ui_icon};
 use crate::ui::rtl_editor::{self, rtl_editor};
 use crate::ui::theme::{
-    FramelessShellKind, aligned_text, badge_style, card_style, elevated_box_style, font_for_text,
-    font_for_ui, ghost_button_style, has_rich_markdown, palette_for, pill_button_style,
-    primary_button_style, render_markdown_with_highlights, rtl_row, seamless_editor_style,
+    FramelessShellKind, aligned_text, badge_style, elevated_box_style, font_for_text, font_for_ui,
+    ghost_button_style, hairline_divider, has_rich_markdown, keycap, palette_for,
+    pill_button_style, render_markdown_with_highlights, rtl_row, seamless_editor_style,
     sleek_scrollable, square_icon_button, window_close_button_style, wrap_frameless_resize_frame,
 };
 use iced::font::Weight;
@@ -31,7 +31,7 @@ pub struct ModalState {
     pub voice_audio: Option<SpeechAudio>,
     pub voice_used: Option<String>,
     pub voice_is_playing: bool,
-    pub show_voice_transcript: bool,
+    pub voice_generating: bool,
     pub is_loading: bool,
     pub error_message: Option<String>,
     pub is_vision_error: bool,
@@ -73,7 +73,7 @@ impl ModalState {
             voice_audio: None,
             voice_used: None,
             voice_is_playing: false,
-            show_voice_transcript: false,
+            voice_generating: false,
             is_loading: true,
             error_message: None,
             is_vision_error: false,
@@ -104,7 +104,7 @@ impl ModalState {
             voice_audio: None,
             voice_used: None,
             voice_is_playing: false,
-            show_voice_transcript: false,
+            voice_generating: false,
             is_loading: true,
             error_message: None,
             is_vision_error: false,
@@ -126,7 +126,6 @@ pub enum ModalMsg {
     ToggleOutputSelectable,
     PlayAudio,
     StopAudio,
-    ToggleVoiceTranscript,
     TranslateOrRegenerate,
     CopySource,
     CopyOutput,
@@ -154,23 +153,24 @@ pub fn view_modal<'a>(
     let is_rtl = i18n.direction().is_rtl();
     let ui_font = font_for_ui(i18n.direction(), Weight::Normal);
     let ui_font_semi = font_for_ui(i18n.direction(), Weight::Medium);
-    let ui_font_bold = font_for_ui(i18n.direction(), Weight::Bold);
 
-    // Header: Only App Brand ("Langhian") + Pin + Close (drag handle across header title area)
+    let active_model = if state.screenshot_png.is_some() {
+        config
+            .resolved_vision_model()
+            .unwrap_or_else(|| config.active_model())
+    } else {
+        config.active_model()
+    };
+
+    // Header: compact leading logo/target pill (drag strip) + quiet action icons on trailing side
     let brand_group = mouse_area(
         rtl_row(
             is_rtl,
             vec![
-                app_logo(20.0).into(),
-                text(i18n.t("app.title"))
-                    .size(13)
-                    .font(ui_font_bold)
-                    .color(p.text_primary)
-                    .shaping(iced::widget::text::Shaping::Advanced)
-                    .into(),
+                app_logo(18.0).into(),
                 container(
                     text(language_display_name(&state.effective_target_lang))
-                        .size(10)
+                        .size(10.5)
                         .font(ui_font_semi)
                         .color(p.accent_text)
                         .shaping(iced::widget::text::Shaping::Advanced),
@@ -186,6 +186,36 @@ pub fn view_modal<'a>(
         .width(Length::Fill),
     )
     .on_press(ModalMsg::DragWindow);
+
+    let retranslate_btn = square_icon_button(
+        ui_icon(
+            UiIcon::Refresh,
+            15.0,
+            if state.is_loading {
+                p.accent_text
+            } else {
+                p.text_secondary
+            },
+        ),
+        30.0,
+        ModalMsg::TranslateOrRegenerate,
+        ghost_button_style(mode, false),
+    );
+
+    let model_btn = square_icon_button(
+        provider_logo(
+            ProviderLogoKind::from_profile(
+                active_model.provider,
+                &active_model.base_url,
+                &active_model.name,
+            ),
+            15.0,
+            p.text_secondary,
+        ),
+        30.0,
+        ModalMsg::OpenModelsSettings,
+        ghost_button_style(mode, false),
+    );
 
     let pin_btn = square_icon_button(
         ui_icon(
@@ -227,17 +257,25 @@ pub fn view_modal<'a>(
         is_rtl,
         vec![
             brand_group.into(),
-            rtl_row(is_rtl, vec![pin_btn.into(), close_btn.into()])
-                .spacing(4)
-                .align_y(Alignment::Center)
-                .into(),
+            rtl_row(
+                is_rtl,
+                vec![
+                    retranslate_btn.into(),
+                    model_btn.into(),
+                    pin_btn.into(),
+                    close_btn.into(),
+                ],
+            )
+            .spacing(2)
+            .align_y(Alignment::Center)
+            .into(),
         ],
     )
     .spacing(8)
     .align_y(Alignment::Center)
     .width(Length::Fill);
 
-    // 1) Editable Source Box + 1:1 square Copy icon button
+    // 1) Borderless Editable Source Area
     let source_section: Element<'a, ModalMsg> = if let Some(handle) = &state.screenshot_handle {
         container(
             image(handle.clone())
@@ -245,12 +283,14 @@ pub fn view_modal<'a>(
                 .width(Length::Fill)
                 .height(Length::Fill),
         )
-        .padding(10)
+        .padding([4, 4])
         .width(Length::Fill)
         .height(Length::FillPortion(2))
         .style(elevated_box_style(mode, 10.0))
         .into()
     } else {
+        let source_text_preview = state.source_editor.text();
+        let src_font = font_for_text(&source_text_preview, None, Weight::Normal);
         let copy_src_icon = square_icon_button(
             ui_icon(
                 if state.copied_source {
@@ -258,86 +298,41 @@ pub fn view_modal<'a>(
                 } else {
                     UiIcon::Copy
                 },
-                14.0,
+                13.0,
                 if state.copied_source {
                     p.success
                 } else {
-                    p.text_secondary
+                    p.text_muted
                 },
             ),
-            30.0,
+            26.0,
             ModalMsg::CopySource,
             ghost_button_style(mode, state.copied_source),
         );
 
-        let src_top_bar = rtl_row(
-            is_rtl,
-            vec![
-                Space::new().width(Length::Fill).into(),
-                copy_src_icon.into(),
-            ],
-        )
-        .align_y(Alignment::Center)
-        .width(Length::Fill);
-
-        let source_text_preview = state.source_editor.text();
-        let src_font = font_for_text(&source_text_preview, None, Weight::Normal);
+        let editor = rtl_editor(&state.source_editor)
+            .placeholder(i18n.t("translate.source_placeholder"))
+            .on_action(ModalMsg::EditSourceAction)
+            .font(src_font)
+            .size(14.0)
+            .padding([4, 6])
+            .width(Length::Fill)
+            .height(Length::Fill)
+            .style(seamless_editor_style(mode));
 
         container(
-            column![
-                src_top_bar,
-                rtl_editor(&state.source_editor)
-                    .placeholder(i18n.t("translate.source_placeholder"))
-                    .on_action(ModalMsg::EditSourceAction)
-                    .font(src_font)
-                    .size(13.5)
-                    .padding([8, 12])
-                    .height(Length::Fill)
-                    .style(seamless_editor_style(mode)),
-            ]
-            .spacing(6)
-            .height(Length::Fill),
+            rtl_row(is_rtl, vec![editor.into(), copy_src_icon.into()])
+                .spacing(4)
+                .align_y(Alignment::Start)
+                .height(Length::Fill),
         )
-        .padding([10, 14])
+        .padding([4, 2])
         .width(Length::Fill)
         .height(Length::FillPortion(2))
-        .style(card_style(mode, 10.0))
         .into()
     };
 
-    // Single crisp Translate / Re-translate button bar
-    let translate_btn = button(
-        rtl_row(
-            is_rtl,
-            vec![
-                ui_icon(UiIcon::Translate, 15.0, Color::WHITE).into(),
-                text(i18n.t("translate.translate_retranslate"))
-                    .size(12.5)
-                    .font(ui_font_semi)
-                    .color(Color::WHITE)
-                    .shaping(iced::widget::text::Shaping::Advanced)
-                    .into(),
-            ],
-        )
-        .spacing(7)
-        .align_y(Alignment::Center),
-    )
-    .on_press(ModalMsg::TranslateOrRegenerate)
-    .padding([8, 18])
-    .style(primary_button_style(mode));
-
-    let action_strip = rtl_row(
-        is_rtl,
-        vec![
-            Space::new().width(Length::Fill).into(),
-            translate_btn.into(),
-            Space::new().width(Length::Fill).into(),
-        ],
-    )
-    .align_y(Alignment::Center)
-    .width(Length::Fill);
-
-    // 2) Output Box + Star, Optional Markdown/Selectable toggle & 1:1 square Copy icon button
+    // 2) Borderless Output Area
     let has_md = has_rich_markdown(&state.translated_text, config.preserve_markdown);
     let show_selectable_editor = !has_md || state.output_force_selectable;
     let output_ready = !state.is_loading
@@ -347,6 +342,39 @@ pub fn view_modal<'a>(
     let is_starred = !state.source_text.trim().is_empty()
         && !state.translated_text.trim().is_empty()
         && find_vocab_match_index(vocab, &state.source_text, &state.translated_text).is_some();
+
+    let settings_btn = square_icon_button(
+        ui_icon(UiIcon::Tune, 14.5, p.text_secondary),
+        30.0,
+        ModalMsg::OpenModelsSettings,
+        ghost_button_style(mode, false),
+    );
+
+    let speaker_active = state.voice_is_playing || state.voice_generating;
+    let speaker_btn = square_icon_button(
+        ui_icon(
+            if state.voice_is_playing {
+                UiIcon::Stop
+            } else {
+                UiIcon::VolumeUp
+            },
+            15.0,
+            if speaker_active {
+                p.accent_text
+            } else if output_ready {
+                p.text_secondary
+            } else {
+                p.text_muted
+            },
+        ),
+        30.0,
+        if state.voice_is_playing {
+            ModalMsg::StopAudio
+        } else {
+            ModalMsg::PlayAudio
+        },
+        ghost_button_style(mode, speaker_active),
+    );
 
     let star_btn = square_icon_button(
         ui_icon(
@@ -386,16 +414,10 @@ pub fn view_modal<'a>(
         ghost_button_style(mode, state.copied_output),
     );
 
-    let show_voice_player = state.voice_mode
-        && state.voice_audio.is_some()
-        && !state.is_loading
-        && state.error_message.is_none();
-    let show_text_content = !show_voice_player || state.show_voice_transcript;
-
-    let mut toolbar_items: Vec<Element<'a, ModalMsg>> =
-        vec![Space::new().width(Length::Fill).into()];
-    if has_md && output_ready && show_text_content {
-        toolbar_items.push(
+    let mut footer_actions: Vec<Element<'a, ModalMsg>> =
+        vec![settings_btn.into(), speaker_btn.into(), star_btn.into()];
+    if has_md && output_ready {
+        footer_actions.push(
             square_icon_button(
                 ui_icon(
                     if show_selectable_editor {
@@ -417,23 +439,55 @@ pub fn view_modal<'a>(
             .into(),
         );
     }
-    toolbar_items.push(star_btn.into());
-    toolbar_items.push(copy_out_btn.into());
+    footer_actions.push(copy_out_btn.into());
 
-    let out_toolbar = rtl_row(is_rtl, toolbar_items)
-        .spacing(4)
-        .align_y(Alignment::Center)
-        .width(Length::Fill);
+    let footer_hints = rtl_row(
+        is_rtl,
+        vec![
+            keycap("Shift×2", mode, ui_font_semi),
+            text(i18n.t("translate.modal_hint_voice"))
+                .size(11)
+                .font(ui_font)
+                .color(p.text_muted)
+                .shaping(iced::widget::text::Shaping::Advanced)
+                .into(),
+            Space::new().width(6).into(),
+            keycap("Esc", mode, ui_font_semi),
+            text(i18n.t("translate.modal_hint_close"))
+                .size(11)
+                .font(ui_font)
+                .color(p.text_muted)
+                .shaping(iced::widget::text::Shaping::Advanced)
+                .into(),
+        ],
+    )
+    .spacing(5)
+    .align_y(Alignment::Center);
+
+    let footer_bar = rtl_row(
+        is_rtl,
+        vec![
+            rtl_row(is_rtl, footer_actions)
+                .spacing(2)
+                .align_y(Alignment::Center)
+                .into(),
+            Space::new().width(Length::Fill).into(),
+            footer_hints.into(),
+        ],
+    )
+    .spacing(8)
+    .align_y(Alignment::Center)
+    .width(Length::Fill);
 
     let output_inner: Element<'a, ModalMsg> = if state.is_loading {
         container(aligned_text(
             i18n.t("app.status_translating"),
-            13.0,
+            13.5,
             ui_font_semi,
             Some(p.text_secondary),
             is_rtl,
         ))
-        .padding([12, 10])
+        .padding([8, 6])
         .width(Length::Fill)
         .height(Length::Fill)
         .into()
@@ -476,21 +530,18 @@ pub fn view_modal<'a>(
                 );
             }
         }
-        sleek_scrollable(
-            container(err_col).padding([8, 10]).width(Length::Fill),
-            mode,
-        )
-        .height(Length::Fill)
-        .into()
+        sleek_scrollable(container(err_col).padding([6, 6]).width(Length::Fill), mode)
+            .height(Length::Fill)
+            .into()
     } else if state.translated_text.trim().is_empty() {
         container(aligned_text(
             i18n.t("translate.result_placeholder"),
-            13.0,
+            13.5,
             ui_font,
             Some(p.text_muted),
             is_rtl,
         ))
-        .padding([10, 10])
+        .padding([8, 6])
         .width(Length::Fill)
         .height(Length::Fill)
         .into()
@@ -505,7 +556,7 @@ pub fn view_modal<'a>(
             .on_action(ModalMsg::EditOutputAction)
             .font(out_font)
             .size(14.5)
-            .padding([8, 12])
+            .padding([4, 6])
             .height(Length::Fill)
             .style(seamless_editor_style(mode));
 
@@ -557,7 +608,7 @@ pub fn view_modal<'a>(
                 mode,
                 14.5,
             ))
-            .padding(Padding::from([8, 12]))
+            .padding(Padding::from([4, 6]))
             .width(Length::Fill),
             mode,
         )
@@ -565,180 +616,19 @@ pub fn view_modal<'a>(
         .into()
     };
 
-    let output_inner: Element<'a, ModalMsg> = if show_voice_player {
-        let status_label = if state.voice_is_playing {
-            i18n.t("translate.voice_playing")
-        } else {
-            i18n.t("translate.voice_ready")
-        };
-        let play_stop_btn = button(
-            rtl_row(
-                is_rtl,
-                vec![
-                    ui_icon(
-                        if state.voice_is_playing {
-                            UiIcon::Stop
-                        } else {
-                            UiIcon::PlayArrow
-                        },
-                        15.0,
-                        Color::WHITE,
-                    )
-                    .into(),
-                    text(if state.voice_is_playing {
-                        i18n.t("translate.stop_audio")
-                    } else {
-                        i18n.t("translate.play_audio")
-                    })
-                    .size(12.5)
-                    .font(ui_font_semi)
-                    .shaping(iced::widget::text::Shaping::Advanced)
-                    .into(),
-                ],
-            )
-            .spacing(6)
-            .align_y(Alignment::Center),
-        )
-        .on_press(if state.voice_is_playing {
-            ModalMsg::StopAudio
-        } else {
-            ModalMsg::PlayAudio
-        })
-        .padding([7, 14])
-        .style(primary_button_style(mode));
+    let output_section = container(output_inner)
+        .padding([2, 2])
+        .width(Length::Fill)
+        .height(Length::FillPortion(3));
 
-        let toggle_text_btn = button(
-            rtl_row(
-                is_rtl,
-                vec![
-                    ui_icon(
-                        UiIcon::MenuBook,
-                        13.5,
-                        if state.show_voice_transcript {
-                            p.accent_text
-                        } else {
-                            p.text_secondary
-                        },
-                    )
-                    .into(),
-                    text(if state.show_voice_transcript {
-                        i18n.t("translate.hide_text")
-                    } else {
-                        i18n.t("translate.show_text")
-                    })
-                    .size(12)
-                    .font(ui_font_semi)
-                    .shaping(iced::widget::text::Shaping::Advanced)
-                    .into(),
-                ],
-            )
-            .spacing(6)
-            .align_y(Alignment::Center),
-        )
-        .on_press(ModalMsg::ToggleVoiceTranscript)
-        .padding([6, 12])
-        .style(ghost_button_style(mode, state.show_voice_transcript));
-
-        let mut header_items: Vec<Element<'a, ModalMsg>> = vec![
-            container(ui_icon(
-                UiIcon::VolumeUp,
-                16.0,
-                if state.voice_is_playing {
-                    p.accent_text
-                } else {
-                    p.text_secondary
-                },
-            ))
-            .padding([6, 8])
-            .style(elevated_box_style(mode, 8.0))
-            .into(),
-            aligned_text(
-                status_label,
-                13.0,
-                ui_font_semi,
-                Some(p.text_primary),
-                is_rtl,
-            ),
-        ];
-
-        if let Some(voice_name) = state.voice_used.as_deref()
-            && !voice_name.is_empty()
-        {
-            header_items.push(
-                container(
-                    text(voice_name.to_string())
-                        .size(11.0)
-                        .font(ui_font)
-                        .color(p.accent_text),
-                )
-                .padding([3, 8])
-                .style(elevated_box_style(mode, 99.0))
-                .into(),
-            );
-        }
-
-        let controls_row = rtl_row(is_rtl, vec![play_stop_btn.into(), toggle_text_btn.into()])
-            .spacing(8)
-            .align_y(Alignment::Center);
-
-        if state.show_voice_transcript {
-            let compact_bar = container(
-                rtl_row(
-                    is_rtl,
-                    vec![
-                        rtl_row(is_rtl, header_items)
-                            .spacing(8)
-                            .align_y(Alignment::Center)
-                            .into(),
-                        Space::new().width(Length::Fill).into(),
-                        controls_row.into(),
-                    ],
-                )
-                .spacing(10)
-                .align_y(Alignment::Center),
-            )
-            .padding([8, 12])
-            .width(Length::Fill)
-            .style(elevated_box_style(mode, 10.0));
-
-            column![compact_bar, output_inner]
-                .spacing(8)
-                .height(Length::Fill)
-                .into()
-        } else {
-            container(
-                column![
-                    rtl_row(is_rtl, header_items)
-                        .spacing(8)
-                        .align_y(Alignment::Center),
-                    controls_row,
-                ]
-                .spacing(14)
-                .align_x(Alignment::Center),
-            )
-            .padding([18, 14])
-            .center_x(Length::Fill)
-            .center_y(Length::Fill)
-            .style(elevated_box_style(mode, 12.0))
-            .into()
-        }
-    } else {
-        output_inner
-    };
-
-    let output_section = container(
-        column![out_toolbar, output_inner]
-            .spacing(6)
-            .height(Length::Fill),
-    )
-    .padding([10, 14])
-    .width(Length::Fill)
-    .height(Length::FillPortion(3))
-    .style(card_style(mode, 10.0));
-
-    let mut body = column![header, source_section, action_strip, output_section]
-        .spacing(10)
-        .height(Length::Fill);
+    let mut body = column![
+        header,
+        source_section,
+        hairline_divider(mode),
+        output_section,
+    ]
+    .spacing(8)
+    .height(Length::Fill);
 
     if let Some(v) = &state.selected_vocab_preview {
         let preview = container(
@@ -785,8 +675,11 @@ pub fn view_modal<'a>(
         body = body.push(preview);
     }
 
+    body = body.push(hairline_divider(mode));
+    body = body.push(footer_bar);
+
     let modal_inner = container(body)
-        .padding(14)
+        .padding(Padding::from([10, 14]))
         .width(Length::Fill)
         .height(Length::Fill);
 

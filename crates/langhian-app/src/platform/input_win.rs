@@ -24,6 +24,7 @@ struct HookSharedState {
     tx: UnboundedSender<InputAction>,
     alt_is_down: Mutex<bool>,
     ctrl_is_down: Mutex<bool>,
+    shift_is_down: Mutex<bool>,
 }
 
 static SHARED: OnceLock<HookSharedState> = OnceLock::new();
@@ -39,6 +40,7 @@ pub fn start_keyboard_listener(
         tx,
         alt_is_down: Mutex::new(false),
         ctrl_is_down: Mutex::new(false),
+        shift_is_down: Mutex::new(false),
     });
 
     std::thread::Builder::new()
@@ -212,7 +214,30 @@ unsafe extern "system" fn hook_proc(code: i32, wparam: WPARAM, lparam: LPARAM) -
                         let _ = shared.tx.send(act);
                     }
                 }
-            } else if !is_shift && !is_meta && is_down {
+            } else if is_shift {
+                if is_down {
+                    if let Ok(mut down) = shared.shift_is_down.lock()
+                        && !*down
+                    {
+                        *down = true;
+                        let others = unsafe { current_modifiers(vk) };
+                        if let Ok(mut sm) = shared.sm.lock() {
+                            sm.on_modifier_down(ModifierKind::Shift, others);
+                        }
+                    }
+                } else if is_up {
+                    if let Ok(mut down) = shared.shift_is_down.lock() {
+                        *down = false;
+                    }
+                    let action =
+                        shared.sm.lock().ok().and_then(|mut sm| {
+                            sm.on_modifier_up(ModifierKind::Shift, Instant::now())
+                        });
+                    if let Some(act) = action {
+                        let _ = shared.tx.send(act);
+                    }
+                }
+            } else if !is_meta && is_down {
                 if let Some(key_name) = vk_to_name(vk) {
                     let mods = unsafe { current_modifiers(vk) };
                     let cfg = shared.config.lock().map(|g| g.clone()).unwrap_or_default();

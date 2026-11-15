@@ -355,6 +355,8 @@ pub struct ShortcutConfig {
     pub enable_double_alt: bool,
     pub auto_select_all_fallback: bool,
     pub enable_double_ctrl: bool,
+    #[serde(default = "default_true")]
+    pub enable_double_shift: bool,
     pub double_tap_ms: u64,
     pub screenshot: ShortcutCombo,
     pub next_prompt: ShortcutCombo,
@@ -368,6 +370,7 @@ impl Default for ShortcutConfig {
             enable_double_alt: true,
             auto_select_all_fallback: true,
             enable_double_ctrl: true,
+            enable_double_shift: true,
             double_tap_ms: 340,
             screenshot: ShortcutCombo::new(true, false, true, false, "X"),
             next_prompt: ShortcutCombo::new(true, true, false, false, "RIGHT"),
@@ -472,6 +475,8 @@ pub struct AppConfig {
     pub voice_translation_enabled: bool,
     #[serde(default)]
     pub active_voice_model_id: Option<String>,
+    #[serde(default)]
+    pub active_vision_model_id: Option<String>,
     #[serde(default = "default_voice_name")]
     pub voice_name: String,
     #[serde(default)]
@@ -511,6 +516,7 @@ impl Default for AppConfig {
             include_prereleases: false,
             voice_translation_enabled: false,
             active_voice_model_id: None,
+            active_vision_model_id: None,
             voice_name: default_voice_name(),
             voice_player_position: None,
         }
@@ -541,6 +547,19 @@ impl AppConfig {
         self.models.iter().find(|m| m.supports_audio_output())
     }
 
+    pub fn resolved_vision_model(&self) -> Option<&ModelProfile> {
+        if let Some(id) = self.active_vision_model_id.as_deref()
+            && let Some(m) = self.models.iter().find(|m| m.id == id && m.supports_vision)
+        {
+            return Some(m);
+        }
+        let active = self.active_model();
+        if active.supports_vision {
+            return Some(active);
+        }
+        self.models.iter().find(|m| m.supports_vision)
+    }
+
     pub fn active_prompt(&self) -> &PromptPreset {
         self.prompts
             .iter()
@@ -559,6 +578,14 @@ impl AppConfig {
             && !self.models.iter().any(|m| m.id == *vid)
         {
             self.active_voice_model_id = None;
+        }
+        if let Some(ref vis_id) = self.active_vision_model_id
+            && !self
+                .models
+                .iter()
+                .any(|m| m.id == *vis_id && m.supports_vision)
+        {
+            self.active_vision_model_id = None;
         }
         if self.voice_name.trim().is_empty() {
             self.voice_name = default_voice_name();
@@ -741,7 +768,47 @@ mod tests {
         assert!(!parsed.modal_pinned);
         assert!(!parsed.voice_translation_enabled);
         assert!(parsed.active_voice_model_id.is_none());
+        assert!(parsed.active_vision_model_id.is_none());
+        assert!(parsed.shortcuts.enable_double_shift);
         assert_eq!(parsed.voice_name, "Kore");
         assert!(parsed.voice_player_position.is_none());
+    }
+
+    #[test]
+    fn resolves_independent_text_voice_and_vision_models() {
+        let mut cfg = AppConfig::default();
+        let text_only = ModelProfile::google_translate_free();
+        let mut vision = ModelProfile::preset_openai();
+        vision.name = "OpenAI Vision".to_string();
+        vision.supports_vision = true;
+        vision.supports_audio = false;
+
+        let mut voice = ModelProfile::preset_gemini();
+        voice.name = "Gemini Voice".to_string();
+        voice.model_id = "gemini-2.5-flash-preview-tts".to_string();
+        voice.supports_vision = false;
+        voice.supports_audio = true;
+
+        cfg.models = vec![text_only.clone(), vision.clone(), voice.clone()];
+        cfg.active_model_id = text_only.id.clone();
+        cfg.active_vision_model_id = Some(vision.id.clone());
+        cfg.active_voice_model_id = Some(voice.id.clone());
+        cfg.ensure_valid();
+
+        assert_eq!(cfg.active_model().id, text_only.id);
+        assert_eq!(
+            cfg.resolved_vision_model().map(|m| m.id.as_str()),
+            Some(vision.id.as_str())
+        );
+        assert_eq!(
+            cfg.resolved_voice_model().map(|m| m.id.as_str()),
+            Some(voice.id.as_str())
+        );
+
+        // Removing vision support clears stale active_vision_model_id on ensure_valid
+        cfg.models[1].supports_vision = false;
+        cfg.ensure_valid();
+        assert!(cfg.active_vision_model_id.is_none());
+        assert!(cfg.resolved_vision_model().is_none());
     }
 }
