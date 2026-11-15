@@ -119,6 +119,8 @@ jobs:
         env:
           LANGHIAN_BUILD_SHA: ${{ github.sha }}
           LANGHIAN_BUILD_CHANNEL: ${{ needs.prepare.outputs.prerelease == 'true' && 'nightly' || 'stable' }}
+          CARGO_PROFILE_RELEASE_LTO: ${{ needs.prepare.outputs.tag_name == 'nightly' && 'off' || 'thin' }}
+          CARGO_PROFILE_RELEASE_CODEGEN_UNITS: ${{ needs.prepare.outputs.tag_name == 'nightly' && '16' || '1' }}
         run: cargo build --release --target x86_64-pc-windows-msvc -p langhian-app
 
       - name: Package Portable ZIP
@@ -149,6 +151,7 @@ jobs:
   build-macos:
     name: macOS (${{ matrix.name }})
     needs: [prepare]
+    if: needs.prepare.outputs.tag_name != 'nightly'
     runs-on: macos-latest
     strategy:
       fail-fast: false
@@ -203,6 +206,7 @@ jobs:
   build-linux:
     name: Linux x86_64
     needs: [prepare]
+    if: needs.prepare.outputs.tag_name != 'nightly'
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
@@ -283,6 +287,12 @@ jobs:
   publish:
     name: Publish GitHub Release
     needs: [prepare, build-windows, build-macos, build-linux]
+    if: |
+      always() &&
+      needs.prepare.result == 'success' &&
+      needs.build-windows.result == 'success' &&
+      (needs.build-macos.result == 'success' || needs.build-macos.result == 'skipped') &&
+      (needs.build-linux.result == 'success' || needs.build-linux.result == 'skipped')
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
