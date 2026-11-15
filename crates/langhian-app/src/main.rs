@@ -2355,6 +2355,10 @@ impl LanghianApp {
                 self.dashboard.active_tab = tab;
                 Task::none()
             }
+            DashboardMsg::ToggleSidebar => {
+                self.dashboard.sidebar_collapsed = !self.dashboard.sidebar_collapsed;
+                Task::none()
+            }
             DashboardMsg::SwitchSettingsSubTab(sub) => {
                 self.dashboard.settings_subtab = sub;
                 Task::none()
