@@ -32,7 +32,8 @@
     "prompts": "پرامپت‌ها",
     "vocabulary": "واژگان",
     "history": "تاریخچه",
-    "settings": "تنظیمات"
+    "settings": "تنظیمات",
+    "toggle_sidebar": "باز و بسته کردن نوار کناری"
   },
   "translate": {
     "source_label": "متن مبدأ",

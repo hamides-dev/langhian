@@ -64,6 +64,8 @@ const ICON_RESTART_ALT: &[u8] = include_bytes!("../../../../assets/icons/ui/rest
 const ICON_ROCKET_LAUNCH: &[u8] = include_bytes!("../../../../assets/icons/ui/rocket_launch.svg");
 const ICON_SEARCH: &[u8] = include_bytes!("../../../../assets/icons/ui/search.svg");
 const ICON_SETTINGS: &[u8] = include_bytes!("../../../../assets/icons/ui/settings.svg");
+const ICON_SIDEBAR_OPEN: &[u8] = include_bytes!("../../../../assets/icons/ui/sidebar_open.svg");
+const ICON_SIDEBAR_CLOSED: &[u8] = include_bytes!("../../../../assets/icons/ui/sidebar_closed.svg");
 const ICON_SMART_TOY: &[u8] = include_bytes!("../../../../assets/icons/ui/smart_toy.svg");
 const ICON_STAR: &[u8] = include_bytes!("../../../../assets/icons/ui/star.svg");
 const ICON_STAR_FILL: &[u8] = include_bytes!("../../../../assets/icons/ui/star-fill.svg");
@@ -124,6 +126,8 @@ pub enum UiIcon {
     RocketLaunch,
     Search,
     Settings,
+    SidebarClosed,
+    SidebarOpen,
     SmartToy,
     Star,
     StarFill,
@@ -174,6 +178,8 @@ impl UiIcon {
             Self::RocketLaunch => ICON_ROCKET_LAUNCH,
             Self::Search => ICON_SEARCH,
             Self::Settings => ICON_SETTINGS,
+            Self::SidebarClosed => ICON_SIDEBAR_CLOSED,
+            Self::SidebarOpen => ICON_SIDEBAR_OPEN,
             Self::SmartToy => ICON_SMART_TOY,
             Self::Star => ICON_STAR,
             Self::StarFill => ICON_STAR_FILL,

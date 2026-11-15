@@ -32,7 +32,8 @@
     "prompts": "Prompts",
     "vocabulary": "Vocabulary",
     "history": "History",
-    "settings": "Settings"
+    "settings": "Settings",
+    "toggle_sidebar": "Toggle Sidebar"
   },
   "translate": {
     "source_label": "Source",
