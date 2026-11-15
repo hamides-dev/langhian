@@ -7,7 +7,7 @@ use crate::ui::theme::{
     sleek_scrollable, square_icon_button, window_close_button_style, wrap_frameless_resize_frame,
 };
 use iced::font::Weight;
-use iced::widget::{Space, button, column, container, image, mouse_area, row, text};
+use iced::widget::{Space, button, column, container, image, mouse_area, row, text, tooltip};
 use iced::{Alignment, Color, ContentFit, Element, Length, Padding, window};
 use langhian_core::{
     AppConfig, SpeechAudio, TextSegment, Translator, VocabEntry, VocabMatcher,
@@ -188,20 +188,31 @@ pub fn view_modal<'a>(
     )
     .on_press(ModalMsg::DragWindow);
 
-    let retranslate_btn = square_icon_button(
-        ui_icon(
-            UiIcon::Refresh,
-            15.0,
-            if state.is_loading {
-                p.accent_text
-            } else {
-                p.text_secondary
-            },
+    let retranslate_btn = tooltip(
+        square_icon_button(
+            ui_icon(
+                UiIcon::Translate,
+                15.0,
+                if state.is_loading {
+                    p.accent_text
+                } else {
+                    p.text_secondary
+                },
+            ),
+            30.0,
+            ModalMsg::TranslateOrRegenerate,
+            ghost_button_style(mode, false),
         ),
-        30.0,
-        ModalMsg::TranslateOrRegenerate,
-        ghost_button_style(mode, false),
-    );
+        text(i18n.t("nav.translate"))
+            .size(12)
+            .font(ui_font)
+            .color(p.text_primary)
+            .shaping(iced::widget::text::Shaping::Advanced),
+        tooltip::Position::Bottom,
+    )
+    .gap(6)
+    .padding(6)
+    .style(elevated_box_style(mode, 6.0));
 
     let model_btn = square_icon_button(
         provider_logo(
