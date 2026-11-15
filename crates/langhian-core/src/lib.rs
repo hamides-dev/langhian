@@ -34,5 +34,7 @@ pub use providers::{
 };
 pub use rtl::{TextDirection, contains_rtl_script, detect_direction, is_rtl_lang};
 pub use storage::{AppStorage, SecretStore};
-pub use updater::{ReleaseAsset, ReleaseManifest, UpdateCheckResult, UpdaterClient};
+pub use updater::{
+    DownloadProgress, ReleaseAsset, ReleaseManifest, UpdateCheckResult, UpdaterClient,
+};
 pub use vocab::{TextSegment, VocabEntry, VocabMatcher, find_vocab_match_index};

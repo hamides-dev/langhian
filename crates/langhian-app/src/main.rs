@@ -207,6 +207,7 @@ enum Message {
     ProbeModelFinished(Result<(Option<bool>, Option<bool>, String), String>),
     FetchModelsFinished(Result<Vec<ModelCatalogEntry>, String>),
     UpdateCheckFinished(Result<UpdateCheckResult, String>),
+    UpdateDownloadProgress(Option<u8>),
     UpdateDownloadFinished(Result<std::path::PathBuf, String>),
 
     // Sub-views
@@ -1158,8 +1159,14 @@ impl LanghianApp {
                 Task::none()
             }
 
+            Message::UpdateDownloadProgress(pct) => {
+                self.dashboard.update_download_progress = pct;
+                Task::none()
+            }
+
             Message::UpdateDownloadFinished(res) => {
                 self.dashboard.update_downloading = false;
+                self.dashboard.update_download_progress = None;
                 match res {
                     Ok(path) => match launch_installer(&path) {
                         Ok(should_exit) => {
@@ -3330,6 +3337,9 @@ impl LanghianApp {
                 )
             }
             DashboardMsg::DownloadAndInstallUpdate => {
+                if self.dashboard.update_downloading {
+                    return Task::none();
+                }
                 let Some(res) = &self.dashboard.update_status else {
                     return Task::none();
                 };
@@ -3338,16 +3348,22 @@ impl LanghianApp {
                     return Task::none();
                 };
                 self.dashboard.update_downloading = true;
+                self.dashboard.update_download_progress = Some(0);
                 let updater = self.updater.clone();
-                Task::perform(
-                    async move {
-                        updater
-                            .download_installer(&asset)
-                            .await
-                            .map_err(|e| e.to_string())
-                    },
-                    Message::UpdateDownloadFinished,
-                )
+                Task::stream(stream::channel(32, async move |mut output| {
+                    let mut last_pct: Option<Option<u8>> = None;
+                    let result = updater
+                        .download_installer_with_progress(&asset, |progress| {
+                            let pct = progress.percent();
+                            if last_pct != Some(pct) {
+                                last_pct = Some(pct);
+                                let _ = output.try_send(Message::UpdateDownloadProgress(pct));
+                            }
+                        })
+                        .await
+                        .map_err(|e| e.to_string());
+                    let _ = output.send(Message::UpdateDownloadFinished(result)).await;
+                }))
             }
             DashboardMsg::OpenReleaseUrl(url) => {
                 let _ = open::that(url);

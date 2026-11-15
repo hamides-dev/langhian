@@ -48,6 +48,22 @@ pub struct UpdateCheckResult {
     pub installer_asset: Option<ReleaseAsset>,
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct DownloadProgress {
+    pub downloaded: u64,
+    pub total: Option<u64>,
+}
+
+impl DownloadProgress {
+    pub fn percent(&self) -> Option<u8> {
+        let total = self.total?;
+        if total == 0 {
+            return None;
+        }
+        Some(((self.downloaded.saturating_mul(100)) / total).min(100) as u8)
+    }
+}
+
 #[derive(Debug, Error)]
 pub enum UpdateError {
     #[error("Network error: {0}")]
@@ -185,7 +201,18 @@ impl UpdaterClient {
     }
 
     pub async fn download_installer(&self, asset: &ReleaseAsset) -> Result<PathBuf, UpdateError> {
-        let resp = self
+        self.download_installer_with_progress(asset, |_| {}).await
+    }
+
+    pub async fn download_installer_with_progress<F>(
+        &self,
+        asset: &ReleaseAsset,
+        mut on_progress: F,
+    ) -> Result<PathBuf, UpdateError>
+    where
+        F: FnMut(DownloadProgress),
+    {
+        let mut resp = self
             .http
             .get(&asset.url)
             .send()
@@ -196,10 +223,24 @@ impl UpdaterClient {
             return Err(UpdateError::Network(format!("HTTP {}", resp.status())));
         }
 
-        let bytes = resp
-            .bytes()
+        let total = resp.content_length();
+        let mut bytes = Vec::with_capacity(total.unwrap_or(0) as usize);
+        on_progress(DownloadProgress {
+            downloaded: 0,
+            total,
+        });
+
+        while let Some(chunk) = resp
+            .chunk()
             .await
-            .map_err(|e| UpdateError::Network(e.to_string()))?;
+            .map_err(|e| UpdateError::Network(e.to_string()))?
+        {
+            bytes.extend_from_slice(&chunk);
+            on_progress(DownloadProgress {
+                downloaded: bytes.len() as u64,
+                total,
+            });
+        }
 
         if !asset.sha256.trim().is_empty() {
             let mut hasher = Sha256::new();
@@ -458,5 +499,41 @@ mod tests {
         let rc_res = compare_manifest("0.2.0", &rc).expect("prerelease semver");
         assert!(rc_res.has_update);
         assert_eq!(rc_res.latest_version, "0.2.1-rc.1");
+    }
+
+    #[test]
+    fn download_progress_computes_percentage() {
+        assert_eq!(
+            DownloadProgress {
+                downloaded: 0,
+                total: Some(200),
+            }
+            .percent(),
+            Some(0)
+        );
+        assert_eq!(
+            DownloadProgress {
+                downloaded: 84,
+                total: Some(200),
+            }
+            .percent(),
+            Some(42)
+        );
+        assert_eq!(
+            DownloadProgress {
+                downloaded: 250,
+                total: Some(200),
+            }
+            .percent(),
+            Some(100)
+        );
+        assert_eq!(
+            DownloadProgress {
+                downloaded: 50,
+                total: None,
+            }
+            .percent(),
+            None
+        );
     }
 }
