@@ -14,7 +14,8 @@ use crate::ui::theme::{
 use iced::font::Weight;
 use iced::widget::text::Shaping;
 use iced::widget::{
-    Space, button, column, container, mouse_area, pick_list, row, text, text_input, toggler,
+    Space, button, column, container, mouse_area, pick_list, progress_bar, row, text, text_input,
+    toggler,
 };
 use iced::window;
 use iced::{Alignment, Background, Border, Color, Element, Font, Length, Padding};
@@ -200,6 +201,7 @@ pub struct DashboardState {
     // Updates
     pub update_checking: bool,
     pub update_downloading: bool,
+    pub update_download_progress: Option<u8>,
     pub update_status: Option<UpdateCheckResult>,
     pub update_error: Option<String>,
 }
@@ -250,6 +252,7 @@ impl DashboardState {
             settings_toast: None,
             update_checking: false,
             update_downloading: false,
+            update_download_progress: None,
             update_status: None,
             update_error: None,
         }
@@ -4520,27 +4523,35 @@ fn view_settings_updates<'a>(
                 i18n.t("updates.available"),
                 res.latest_version
             );
+            let download_label = if state.update_downloading {
+                match state.update_download_progress {
+                    Some(pct) => format!("{} {}%", i18n.t("updates.downloading"), pct),
+                    None => i18n.t("updates.downloading"),
+                }
+            } else {
+                i18n.t("updates.download_install")
+            };
             action_items.push(
                 button(
                     rtl_row(
                         is_rtl,
                         vec![
                             ui_icon(UiIcon::Download, 14.0, Color::WHITE).into(),
-                            text(if state.update_downloading {
-                                i18n.t("updates.downloading")
-                            } else {
-                                i18n.t("updates.download_install")
-                            })
-                            .size(12)
-                            .font(ui_font_semi)
-                            .color(Color::WHITE)
-                            .into(),
+                            text(download_label)
+                                .size(12)
+                                .font(ui_font_semi)
+                                .color(Color::WHITE)
+                                .into(),
                         ],
                     )
                     .spacing(6)
                     .align_y(Alignment::Center),
                 )
-                .on_press(DashboardMsg::DownloadAndInstallUpdate)
+                .on_press_maybe(if state.update_downloading {
+                    None
+                } else {
+                    Some(DashboardMsg::DownloadAndInstallUpdate)
+                })
                 .padding([7, 14])
                 .style(primary_button_style(mode))
                 .into(),
@@ -4563,7 +4574,7 @@ fn view_settings_updates<'a>(
         update_desc = format!("{update_desc}  ·  {err}");
     }
 
-    container(column![
+    let mut card_items: Vec<Element<'a, DashboardMsg>> = vec![
         sleek_row(
             mode,
             is_rtl,
@@ -4604,8 +4615,25 @@ fn view_settings_updates<'a>(
             ui_font,
             ui_font_semi,
         ),
-    ])
-    .width(Length::Fill)
-    .style(card_style(mode, 10.0))
-    .into()
+    ];
+
+    if state.update_downloading {
+        let pct = state.update_download_progress.unwrap_or(0) as f32;
+        card_items.push(
+            container(progress_bar(0.0..=100.0, pct).girth(4))
+                .padding(Padding {
+                    top: 0.0,
+                    right: 16.0,
+                    bottom: 12.0,
+                    left: 16.0,
+                })
+                .width(Length::Fill)
+                .into(),
+        );
+    }
+
+    container(column(card_items))
+        .width(Length::Fill)
+        .style(card_style(mode, 10.0))
+        .into()
 }
