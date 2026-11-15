@@ -57,6 +57,7 @@ fn decode_screenshot_handle(png_bytes: &[u8]) -> image::Handle {
 
 impl ModalState {
     pub fn for_text(source_text: String, pinned: bool, default_target_lang: &str) -> Self {
+        let has_source = !source_text.trim().is_empty();
         let source_editor = rtl_editor::Content::with_text(&source_text);
         Self {
             source_editor,
@@ -74,7 +75,7 @@ impl ModalState {
             voice_used: None,
             voice_is_playing: false,
             voice_generating: false,
-            is_loading: true,
+            is_loading: has_source,
             error_message: None,
             is_vision_error: false,
             pinned,
