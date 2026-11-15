@@ -2738,7 +2738,16 @@ impl LanghianApp {
                     Some(ModelEditorState::from_profile(&profile, None, true));
                 Task::none()
             }
+            DashboardMsg::ToggleModelActionsMenu(id) => {
+                if self.dashboard.open_model_actions_id.as_deref() == Some(id.as_str()) {
+                    self.dashboard.open_model_actions_id = None;
+                } else {
+                    self.dashboard.open_model_actions_id = Some(id);
+                }
+                Task::none()
+            }
             DashboardMsg::StartEditModel(id) => {
+                self.dashboard.open_model_actions_id = None;
                 self.dashboard.selected_preset_kind = None;
                 if let Some(m) = self.config.models.iter().find(|m| m.id == id) {
                     let key = self.secrets.get_api_key(&m.id);
@@ -2748,6 +2757,7 @@ impl LanghianApp {
                 Task::none()
             }
             DashboardMsg::DuplicateModel(id) => {
+                self.dashboard.open_model_actions_id = None;
                 if let Some(m) = self.config.models.iter().find(|m| m.id == id).cloned() {
                     let mut copy = m;
                     copy.id = uuid_v4();
@@ -2764,6 +2774,7 @@ impl LanghianApp {
                 Task::none()
             }
             DashboardMsg::DeleteModel(id) => {
+                self.dashboard.open_model_actions_id = None;
                 if self.config.models.len() > 1 {
                     self.config.models.retain(|m| m.id != id);
                     self.secrets.delete_api_key(&id);
