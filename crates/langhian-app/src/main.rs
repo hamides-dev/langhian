@@ -208,6 +208,8 @@ enum Message {
     ProbeModelFinished(Result<(Option<bool>, Option<bool>, String), String>),
     FetchModelsFinished(Result<Vec<ModelCatalogEntry>, String>),
     UpdateCheckFinished(Result<UpdateCheckResult, String>),
+    AutoUpdateCheckFinished(Option<Result<UpdateCheckResult, String>>),
+    PeriodicUpdateCheck,
     UpdateDownloadProgress(Option<u8>),
     UpdateDownloadFinished(Result<std::path::PathBuf, String>),
 
@@ -406,21 +408,7 @@ impl LanghianApp {
         };
 
         if app.config.auto_check_updates {
-            let updater = app.updater.clone();
-            let include_prereleases = app.config.include_prereleases;
-            app.dashboard.update_checking = true;
-            tasks.push(Task::perform(
-                async move {
-                    updater
-                        .check_for_updates_with_channel(
-                            env!("CARGO_PKG_VERSION"),
-                            include_prereleases,
-                        )
-                        .await
-                        .map_err(|e| e.to_string())
-                },
-                Message::UpdateCheckFinished,
-            ));
+            tasks.push(app.spawn_auto_update_check());
         }
 
         (app, Task::batch(tasks))
@@ -484,6 +472,13 @@ impl LanghianApp {
                 } => Some(Message::GlobalEscPressed),
                 _ => None,
             }));
+        }
+
+        if self.config.auto_check_updates {
+            subs.push(
+                iced::time::every(Duration::from_secs(6 * 60 * 60))
+                    .map(|_| Message::PeriodicUpdateCheck),
+            );
         }
 
         Subscription::batch(subs)
@@ -1165,6 +1160,30 @@ impl LanghianApp {
                     }
                 }
                 Task::none()
+            }
+
+            Message::AutoUpdateCheckFinished(opt) => {
+                self.dashboard.update_checking = false;
+                if let Some(res) = opt {
+                    match res {
+                        Ok(r) => {
+                            self.dashboard.update_error = None;
+                            self.dashboard.update_status = Some(r);
+                        }
+                        Err(e) => {
+                            self.dashboard.update_error = Some(e);
+                        }
+                    }
+                }
+                Task::none()
+            }
+
+            Message::PeriodicUpdateCheck => {
+                if self.config.auto_check_updates {
+                    self.spawn_auto_update_check()
+                } else {
+                    Task::none()
+                }
             }
 
             Message::UpdateDownloadProgress(pct) => {
@@ -3364,19 +3383,23 @@ impl LanghianApp {
                 self.dashboard.update_downloading = true;
                 self.dashboard.update_download_progress = Some(0);
                 let updater = self.updater.clone();
-                Task::stream(stream::channel(32, async move |mut output| {
+                let (tx, rx) = tokio::sync::mpsc::unbounded_channel::<Message>();
+                tokio::spawn(async move {
                     let mut last_pct: Option<Option<u8>> = None;
                     let result = updater
                         .download_installer_with_progress(&asset, |progress| {
                             let pct = progress.percent();
                             if last_pct != Some(pct) {
                                 last_pct = Some(pct);
-                                let _ = output.try_send(Message::UpdateDownloadProgress(pct));
+                                let _ = tx.send(Message::UpdateDownloadProgress(pct));
                             }
                         })
                         .await
                         .map_err(|e| e.to_string());
-                    let _ = output.send(Message::UpdateDownloadFinished(result)).await;
+                    let _ = tx.send(Message::UpdateDownloadFinished(result));
+                });
+                Task::stream(iced::futures::stream::unfold(rx, |mut rx| async move {
+                    rx.recv().await.map(|msg| (msg, rx))
                 }))
             }
             DashboardMsg::OpenReleaseUrl(url) => {
@@ -3384,6 +3407,32 @@ impl LanghianApp {
                 Task::none()
             }
         }
+    }
+
+    fn spawn_auto_update_check(&mut self) -> Task<Message> {
+        if self.dashboard.update_checking || self.dashboard.update_downloading {
+            return Task::none();
+        }
+        let updater = self.updater.clone();
+        let include_prereleases = self.config.include_prereleases;
+        self.dashboard.update_checking = true;
+        Task::perform(
+            async move {
+                if !langhian_core::updater::has_internet_connectivity().await {
+                    return None;
+                }
+                Some(
+                    updater
+                        .check_for_updates_with_channel(
+                            env!("CARGO_PKG_VERSION"),
+                            include_prereleases,
+                        )
+                        .await
+                        .map_err(|e| e.to_string()),
+                )
+            },
+            Message::AutoUpdateCheckFinished,
+        )
     }
 
     fn sync_shortcuts_and_save(&mut self) {
