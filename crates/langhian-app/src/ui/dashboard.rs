@@ -199,6 +199,7 @@ pub struct DashboardState {
     pub settings_error: Option<String>,
     pub settings_toast: Option<String>,
     pub translate_open_picker: Option<TranslateHeaderPicker>,
+    pub open_model_actions_id: Option<String>,
 
     // Updates
     pub update_checking: bool,
@@ -254,6 +255,7 @@ impl DashboardState {
             settings_error: None,
             settings_toast: None,
             translate_open_picker: None,
+            open_model_actions_id: None,
             update_checking: false,
             update_downloading: false,
             update_download_progress: None,
@@ -377,6 +379,7 @@ pub enum DashboardMsg {
     DismissVocabPreview,
 
     // Models tab (Provider-First Setup)
+    ToggleModelActionsMenu(String),
     StartAddPreset(ModelPresetKind),
     StartEditModel(String),
     DuplicateModel(String),
@@ -2432,31 +2435,52 @@ fn view_models_tab<'a>(
                 })),
             ));
         }
+        let menu_open = state.open_model_actions_id.as_deref() == Some(m.id.as_str());
         action_items.push(
-            button(ui_icon(UiIcon::Edit, 14.0, p.text_primary))
-                .on_press(DashboardMsg::StartEditModel(m.id.clone()))
-                .padding([6, 9])
-                .style(pill_button_style(mode))
-                .into(),
+            button(ui_icon(
+                UiIcon::MoreVert,
+                16.0,
+                if menu_open {
+                    p.accent_text
+                } else {
+                    p.text_primary
+                },
+            ))
+            .on_press(DashboardMsg::ToggleModelActionsMenu(m.id.clone()))
+            .padding([5, 7])
+            .style(move |_theme, status| {
+                let pal = palette_for(mode);
+                let bg = if menu_open {
+                    pal.accent_soft
+                } else {
+                    match status {
+                        button::Status::Hovered | button::Status::Pressed => pal.bg_surface_hover,
+                        _ => pal.bg_elevated,
+                    }
+                };
+                button::Style {
+                    background: Some(Background::Color(bg)),
+                    text_color: if menu_open {
+                        pal.accent_text
+                    } else {
+                        pal.text_primary
+                    },
+                    border: Border {
+                        color: if menu_open {
+                            pal.border_focus
+                        } else {
+                            pal.border_subtle
+                        },
+                        width: 1.0,
+                        radius: 8.0.into(),
+                    },
+                    ..Default::default()
+                }
+            })
+            .into(),
         );
-        action_items.push(
-            button(ui_icon(UiIcon::FileCopy, 14.0, p.text_primary))
-                .on_press(DashboardMsg::DuplicateModel(m.id.clone()))
-                .padding([6, 9])
-                .style(pill_button_style(mode))
-                .into(),
-        );
-        if config.models.len() > 1 {
-            action_items.push(
-                button(ui_icon(UiIcon::Delete, 14.0, p.danger))
-                    .on_press(DashboardMsg::DeleteModel(m.id.clone()))
-                    .padding([6, 9])
-                    .style(danger_button_style(mode))
-                    .into(),
-            );
-        }
 
-        rows_col = rows_col.push(
+        let mut row_col = column![
             container(
                 rtl_row(
                     is_rtl,
@@ -2473,7 +2497,105 @@ fn view_models_tab<'a>(
             )
             .padding([12, 16])
             .width(Length::Fill),
-        );
+        ]
+        .width(Length::Fill);
+
+        if menu_open {
+            let menu_item = |icon: UiIcon,
+                             label: String,
+                             fg: Color,
+                             hover_bg: Option<Color>,
+                             msg: DashboardMsg|
+             -> Element<'a, DashboardMsg> {
+                button(
+                    rtl_row(
+                        is_rtl,
+                        vec![
+                            ui_icon(icon, 14.0, fg).into(),
+                            text(label)
+                                .size(12.5)
+                                .font(ui_font)
+                                .color(fg)
+                                .shaping(Shaping::Advanced)
+                                .width(Length::Fill)
+                                .into(),
+                        ],
+                    )
+                    .spacing(8)
+                    .align_y(Alignment::Center),
+                )
+                .on_press(msg)
+                .padding([7, 10])
+                .width(Length::Fill)
+                .style(move |_theme, status| {
+                    let pal = palette_for(mode);
+                    let bg = match status {
+                        button::Status::Hovered | button::Status::Pressed => {
+                            hover_bg.unwrap_or(pal.bg_surface_hover)
+                        }
+                        _ => Color::TRANSPARENT,
+                    };
+                    button::Style {
+                        background: Some(Background::Color(bg)),
+                        text_color: fg,
+                        border: Border {
+                            radius: 6.0.into(),
+                            ..Default::default()
+                        },
+                        ..Default::default()
+                    }
+                })
+                .into()
+            };
+
+            let mut menu_items = column![
+                menu_item(
+                    UiIcon::Edit,
+                    i18n.t("models.edit_profile"),
+                    p.text_primary,
+                    None,
+                    DashboardMsg::StartEditModel(m.id.clone()),
+                ),
+                menu_item(
+                    UiIcon::FileCopy,
+                    i18n.t("models.clone_profile"),
+                    p.text_primary,
+                    None,
+                    DashboardMsg::DuplicateModel(m.id.clone()),
+                ),
+            ]
+            .spacing(2)
+            .width(Length::Fill);
+
+            if config.models.len() > 1 {
+                menu_items = menu_items.push(menu_item(
+                    UiIcon::Delete,
+                    i18n.t("models.delete_profile"),
+                    p.danger,
+                    Some(p.danger_soft),
+                    DashboardMsg::DeleteModel(m.id.clone()),
+                ));
+            }
+
+            let menu_card = container(menu_items)
+                .padding(6)
+                .width(Length::Fixed(180.0))
+                .style(elevated_box_style(mode, 10.0));
+
+            row_col = row_col.push(
+                container(menu_card)
+                    .padding(Padding {
+                        top: 0.0,
+                        right: 16.0,
+                        bottom: 10.0,
+                        left: 16.0,
+                    })
+                    .width(Length::Fill)
+                    .align_x(horizontal_for_dir(!is_rtl)),
+            );
+        }
+
+        rows_col = rows_col.push(row_col);
     }
 
     content = content.push(
