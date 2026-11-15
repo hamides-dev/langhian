@@ -33,6 +33,8 @@ pub struct ReleaseManifest {
     #[serde(default)]
     pub notes: String,
     #[serde(default)]
+    pub commit_sha: Option<String>,
+    #[serde(default)]
     pub assets: BTreeMap<String, ReleaseAsset>,
 }
 
@@ -97,12 +99,16 @@ impl UpdaterClient {
         let manifest = if include_prereleases {
             self.fetch_github_latest_including_prereleases().await?
         } else {
-            match self.fetch_manifest().await {
+            match self.fetch_github_latest_release().await {
                 Ok(m) => m,
-                Err(_) => self.fetch_github_latest_release().await?,
+                Err(_) => self.fetch_manifest().await?,
             }
         };
-        compare_manifest(current_version, &manifest)
+        compare_manifest_with_build(
+            current_version,
+            option_env!("LANGHIAN_BUILD_SHA"),
+            &manifest,
+        )
     }
 
     async fn fetch_manifest(&self) -> Result<ReleaseManifest, UpdateError> {
@@ -244,6 +250,21 @@ pub fn platform_asset_key() -> &'static str {
     }
 }
 
+fn extract_nightly_commit_sha(notes: &str) -> Option<String> {
+    const MARKER: &str = "Automated nightly build for commit ";
+    let idx = notes.find(MARKER)?;
+    let tail = &notes[idx + MARKER.len()..];
+    let token = tail
+        .split_whitespace()
+        .next()?
+        .trim_matches(|c: char| !c.is_ascii_hexdigit());
+    if token.len() == 40 && token.chars().all(|c| c.is_ascii_hexdigit()) {
+        Some(token.to_ascii_lowercase())
+    } else {
+        None
+    }
+}
+
 fn parse_github_release(json: &serde_json::Value) -> ReleaseManifest {
     let tag = json["tag_name"].as_str().unwrap_or("v0.1.0").to_string();
     let version = tag.trim_start_matches('v').to_string();
@@ -252,6 +273,7 @@ fn parse_github_release(json: &serde_json::Value) -> ReleaseManifest {
         .unwrap_or("https://github.com/hamides-dev/langhian/releases/latest")
         .to_string();
     let notes = json["body"].as_str().unwrap_or_default().to_string();
+    let commit_sha = extract_nightly_commit_sha(&notes);
 
     let mut assets = BTreeMap::new();
     if let Some(arr) = json["assets"].as_array() {
@@ -296,12 +318,21 @@ fn parse_github_release(json: &serde_json::Value) -> ReleaseManifest {
             .to_string(),
         release_url,
         notes,
+        commit_sha,
         assets,
     }
 }
 
 pub fn compare_manifest(
     current_version: &str,
+    manifest: &ReleaseManifest,
+) -> Result<UpdateCheckResult, UpdateError> {
+    compare_manifest_with_build(current_version, None, manifest)
+}
+
+pub fn compare_manifest_with_build(
+    current_version: &str,
+    current_commit: Option<&str>,
     manifest: &ReleaseManifest,
 ) -> Result<UpdateCheckResult, UpdateError> {
     let cur = Version::parse(current_version.trim().trim_start_matches('v'))
@@ -315,7 +346,18 @@ pub fn compare_manifest(
             Some(date) if !date.is_empty() => format!("nightly ({date})"),
             _ => "nightly".to_string(),
         };
-        (label, true)
+        let same_commit = match (
+            current_commit.map(str::trim).filter(|s| !s.is_empty()),
+            manifest
+                .commit_sha
+                .as_deref()
+                .map(str::trim)
+                .filter(|s| !s.is_empty()),
+        ) {
+            (Some(cur_sha), Some(rel_sha)) => cur_sha.eq_ignore_ascii_case(rel_sha),
+            _ => false,
+        };
+        (label, !same_commit)
     } else {
         let latest = Version::parse(manifest.version.trim().trim_start_matches('v'))
             .map_err(|e| UpdateError::InvalidManifest(e.to_string()))?;
@@ -356,6 +398,7 @@ mod tests {
             published_at: "2026-11-20".to_string(),
             release_url: "https://github.com/hamides-dev/langhian/releases/tag/v0.2.0".to_string(),
             notes: "Bug fixes".to_string(),
+            commit_sha: None,
             assets: BTreeMap::new(),
         };
         let res = compare_manifest("0.1.0", &manifest).expect("valid semver");
@@ -367,17 +410,40 @@ mod tests {
 
     #[test]
     fn compares_nightly_and_prerelease_versions() {
+        let nightly_sha = "0123456789abcdef0123456789abcdef01234567";
         let nightly = ReleaseManifest {
             version: "nightly".to_string(),
             tag: "nightly".to_string(),
             published_at: "2026-11-14T20:00:00Z".to_string(),
             release_url: "https://github.com/hamides-dev/langhian/releases/tag/nightly".to_string(),
-            notes: "Nightly build".to_string(),
+            notes: format!("Automated nightly build for commit {nightly_sha}.\n\nChangelog"),
+            commit_sha: Some(nightly_sha.to_string()),
             assets: BTreeMap::new(),
         };
         let res = compare_manifest("0.2.0", &nightly).expect("nightly manifest");
         assert!(res.has_update);
         assert_eq!(res.latest_version, "nightly (2026-11-14)");
+
+        let same_nightly =
+            compare_manifest_with_build("0.3.0", Some(nightly_sha), &nightly).expect("same commit");
+        assert!(!same_nightly.has_update);
+
+        let older_nightly = compare_manifest_with_build(
+            "0.3.0",
+            Some("fedcba9876543210fedcba9876543210fedcba98"),
+            &nightly,
+        )
+        .expect("different commit");
+        assert!(older_nightly.has_update);
+
+        let parsed = parse_github_release(&serde_json::json!({
+            "tag_name": "nightly",
+            "published_at": "2026-11-15T08:00:00Z",
+            "html_url": "https://github.com/hamides-dev/langhian/releases/tag/nightly",
+            "body": format!("Automated nightly build for commit {nightly_sha}."),
+            "assets": []
+        }));
+        assert_eq!(parsed.commit_sha.as_deref(), Some(nightly_sha));
 
         let rc = ReleaseManifest {
             version: "0.2.1-rc.1".to_string(),
@@ -386,6 +452,7 @@ mod tests {
             release_url: "https://github.com/hamides-dev/langhian/releases/tag/v0.2.1-rc.1"
                 .to_string(),
             notes: "RC".to_string(),
+            commit_sha: None,
             assets: BTreeMap::new(),
         };
         let rc_res = compare_manifest("0.2.0", &rc).expect("prerelease semver");

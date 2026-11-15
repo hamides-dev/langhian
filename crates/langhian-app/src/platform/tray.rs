@@ -1,5 +1,5 @@
 use crate::ui::icons::APP_LOGO_PNG as APP_ICON_PNG;
-use langhian_core::{AppConfig, Translator};
+use langhian_core::{AppConfig, Translator, is_dedicated_tts_model};
 use std::collections::HashMap;
 use std::sync::{Arc, Mutex};
 use tokio::sync::mpsc::UnboundedSender;
@@ -16,6 +16,7 @@ pub enum TrayAction {
     QuickTranslate,
     ScreenshotTranslate,
     SelectModel(String),
+    SelectVoiceModel(String),
     SelectPrompt(String),
     Quit,
 }
@@ -122,8 +123,19 @@ fn build_menu(
     actions.insert(snip_item.id().clone(), TrayAction::ScreenshotTranslate);
     actions.insert(quit_item.id().clone(), TrayAction::Quit);
 
-    let model_sub = Submenu::new(i18n.t("tray.active_model"), true);
+    let has_non_tts = config
+        .models
+        .iter()
+        .any(|m| !is_dedicated_tts_model(m.provider, &m.model_id));
+
+    let model_sub = Submenu::new(i18n.t("tray.text_model"), true);
     for m in &config.models {
+        if has_non_tts
+            && is_dedicated_tts_model(m.provider, &m.model_id)
+            && m.id != config.active_model_id
+        {
+            continue;
+        }
         let label = if m.supports_vision {
             format!("{} [Vision]", m.name)
         } else {
@@ -133,6 +145,23 @@ fn build_menu(
         let item = CheckMenuItem::new(label, true, checked, None);
         actions.insert(item.id().clone(), TrayAction::SelectModel(m.id.clone()));
         let _ = model_sub.append(&item);
+    }
+
+    let audio_models: Vec<_> = config
+        .models
+        .iter()
+        .filter(|m| m.supports_audio_output())
+        .collect();
+    let voice_model_sub = Submenu::new(i18n.t("tray.voice_model"), !audio_models.is_empty());
+    let resolved_voice_id = config.resolved_voice_model().map(|m| m.id.as_str());
+    for m in &audio_models {
+        let checked = resolved_voice_id == Some(m.id.as_str());
+        let item = CheckMenuItem::new(&m.name, true, checked, None);
+        actions.insert(
+            item.id().clone(),
+            TrayAction::SelectVoiceModel(m.id.clone()),
+        );
+        let _ = voice_model_sub.append(&item);
     }
 
     let prompt_sub = Submenu::new(i18n.t("tray.active_prompt"), true);
@@ -153,6 +182,7 @@ fn build_menu(
     menu.append(&PredefinedMenuItem::separator())
         .map_err(|e| e.to_string())?;
     menu.append(&model_sub).map_err(|e| e.to_string())?;
+    menu.append(&voice_model_sub).map_err(|e| e.to_string())?;
     menu.append(&prompt_sub).map_err(|e| e.to_string())?;
     menu.append(&PredefinedMenuItem::separator())
         .map_err(|e| e.to_string())?;

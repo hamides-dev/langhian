@@ -1,0 +1,46 @@
+{
+  "$schema": "https://raw.githubusercontent.com/googleapis/release-please/main/schemas/config.json",
+  "packages": {
+    ".": {
+      "release-type": "simple",
+      "package-name": "langhian",
+      "include-component-in-tag": false,
+      "bump-minor-pre-major": true,
+      "changelog-path": "CHANGELOG.md",
+      "extra-files": [
+        {
+          "type": "generic",
+          "path": "Cargo.toml"
+        },
+        {
+          "type": "generic",
+          "path": "packaging/macos/Info.plist"
+        },
+        {
+          "type": "generic",
+          "path": "packaging/windows/langhian.iss"
+        },
+        {
+          "type": "json",
+          "path": "version.json",
+          "jsonpath": "$.version"
+        },
+        {
+          "type": "json",
+          "path": "version.json",
+          "jsonpath": "$.tag"
+        },
+        {
+          "type": "json",
+          "path": "version.json",
+          "jsonpath": "$.release_url"
+        },
+        {
+          "type": "json",
+          "path": "version.json",
+          "jsonpath": "$.assets.*.url"
+        }
+      ]
+    }
+  }
+}

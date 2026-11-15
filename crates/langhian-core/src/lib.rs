@@ -26,8 +26,11 @@ pub use models::{
     supported_languages,
 };
 pub use providers::{
-    ModelCapabilityProbe, ProviderError, TranslateInput, TranslateRequest, TranslateResponse,
-    TranslatorClient, infer_vision_capability,
+    AudioFormat, ModelCapabilityProbe, ProviderError, SpeechAudio, TranslateInput,
+    TranslateRequest, TranslateResponse, TranslatorClient, VoiceOption, VoiceTranslationResponse,
+    curated_voices_for_profile, infer_audio_capability, infer_vision_capability,
+    is_audio_chat_model, is_dedicated_tts_model, markdown_to_speech_text, pcm16_le_to_wav,
+    resolve_voice_for_profile,
 };
 pub use rtl::{TextDirection, contains_rtl_script, detect_direction, is_rtl_lang};
 pub use storage::{AppStorage, SecretStore};

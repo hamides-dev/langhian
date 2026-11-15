@@ -3,5 +3,7 @@ pub mod hud;
 pub mod icons;
 pub mod modal;
 pub mod onboarding;
+pub mod rtl_editor;
 pub mod snip_overlay;
 pub mod theme;
+pub mod voice_player;

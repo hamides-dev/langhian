@@ -5,17 +5,19 @@ mod ui;
 
 use iced::futures::SinkExt;
 use iced::keyboard::key::Named;
-use iced::widget::{container, text_editor};
+use iced::widget::container;
 use iced::{Element, Point, Size, Subscription, Task, Theme, keyboard, stream, window};
 use langhian_core::hotkey_logic::InputAction;
 use langhian_core::vocab::{export_vocab_csv, export_vocab_json};
 use langhian_core::{
     AppConfig, AppStorage, HistoryEntry, ModelCatalogEntry, ModelProfile, PromptPreset,
-    ProviderError, ProviderKind, SecretStore, ShortcutCombo, ShortcutConfig, TranslateInput,
-    TranslateRequest, TranslationMode, Translator, TranslatorClient, UpdateCheckResult,
-    UpdaterClient, VocabEntry, VocabMatcher, find_vocab_match_index, history::push_bounded_history,
-    infer_vision_capability, resolve_bidirectional_direction,
+    ProviderError, ProviderKind, SecretStore, ShortcutCombo, ShortcutConfig, SpeechAudio,
+    TranslateInput, TranslateRequest, TranslationMode, Translator, TranslatorClient,
+    UpdateCheckResult, UpdaterClient, VocabEntry, VocabMatcher, find_vocab_match_index,
+    history::push_bounded_history, infer_audio_capability, infer_vision_capability,
+    is_dedicated_tts_model, resolve_bidirectional_direction, resolve_voice_for_profile,
 };
+use platform::audio::AudioPlayer;
 use platform::capture::{capture_active_monitor, crop_screen_to_png};
 use platform::clipboard::{
     capture_foreground_handle, capture_selection, replace_with_text, restore_foreground_handle,
@@ -37,8 +39,10 @@ use ui::dashboard::{
 };
 use ui::hud::{HudState, view_hud};
 use ui::modal::{ModalMsg, ModalState, view_modal};
+use ui::rtl_editor;
 use ui::snip_overlay::{SnipEvent, SnipState, view_snip_overlay};
 use ui::theme::transparent_iced_theme_for;
+use ui::voice_player::{VoicePlayerMsg, VoicePlayerState, view_voice_player};
 
 #[derive(Debug, Clone)]
 enum BridgeEvent {
@@ -132,6 +136,9 @@ struct LanghianApp {
     modal_user_dragged: bool,
     snip_id: Option<window::Id>,
     hud_id: Option<window::Id>,
+    voice_player_id: Option<window::Id>,
+    voice_player_opened_at: Option<Instant>,
+    voice_player_user_dragged: bool,
 
     // Window states
     dashboard: DashboardState,
@@ -139,9 +146,12 @@ struct LanghianApp {
     snip: Option<SnipState>,
     hud: Option<HudState>,
     hud_expires_at: Option<Instant>,
+    voice_player: Option<VoicePlayerState>,
     pending_replace_prev_clip: Option<String>,
     pending_target_hwnd: isize,
     translation_seq: u64,
+    audio_player: AudioPlayer,
+    pending_voice_launch: Option<PendingModalLaunch>,
 }
 
 #[derive(Debug, Clone)]
@@ -151,6 +161,8 @@ enum Message {
     WindowEventOccurred(window::Id, window::Event),
     GlobalEscPressed,
     HudTick,
+    AudioTick,
+    CancelVoiceGeneration,
 
     // Async workflow results
     InPlaceCaptured {
@@ -167,7 +179,7 @@ enum Message {
         seq: u64,
         effective_target: String,
         was_auto_reversed: bool,
-        result: Result<(String, Option<String>), TranslationFail>,
+        result: Result<ModalTranslationOutcome, TranslationFail>,
         mode: TranslationMode,
     },
     InPlaceFlowFinished(Result<(String, String, Option<String>), String>),
@@ -175,9 +187,10 @@ enum Message {
         seq: u64,
         effective_target: String,
         was_auto_reversed: bool,
-        result: Result<(String, Option<String>), TranslationFail>,
+        result: Result<ModalTranslationOutcome, TranslationFail>,
     },
-    ProbeModelFinished(Result<(bool, String), String>),
+    TestVoiceFinished(Result<(SpeechAudio, String), String>),
+    ProbeModelFinished(Result<(Option<bool>, Option<bool>, String), String>),
     FetchModelsFinished(Result<Vec<ModelCatalogEntry>, String>),
     UpdateCheckFinished(Result<UpdateCheckResult, String>),
     UpdateDownloadFinished(Result<std::path::PathBuf, String>),
@@ -186,6 +199,7 @@ enum Message {
     Dashboard(DashboardMsg),
     Modal(ModalMsg),
     Snip(SnipEvent),
+    VoicePlayer(VoicePlayerMsg),
     ClearCopyBadge {
         target: CopyBadgeTarget,
         seq: u64,
@@ -205,12 +219,34 @@ enum WindowKind {
     Modal,
     Snip,
     Hud,
+    VoicePlayer,
 }
 
 #[derive(Debug, Clone)]
 struct TranslationFail {
     is_vision: bool,
     message: String,
+}
+
+#[derive(Debug, Clone)]
+struct ModalTranslationOutcome {
+    translated_text: String,
+    detected_source_lang: Option<String>,
+    voice_audio: Option<SpeechAudio>,
+    voice_used: Option<String>,
+}
+
+#[derive(Debug, Clone, Copy)]
+struct PendingModalLaunch {
+    seq: u64,
+    anchor_phys: Option<(i32, i32, i32)>,
+    cursor_phys: Option<(i32, i32)>,
+}
+
+struct ResolvedTranslationPipeline {
+    text_profile: ModelProfile,
+    text_key: Option<String>,
+    voice: Option<(ModelProfile, Option<String>, String)>,
 }
 
 impl LanghianApp {
@@ -313,14 +349,20 @@ impl LanghianApp {
             modal_user_dragged: false,
             snip_id: None,
             hud_id: None,
+            voice_player_id: None,
+            voice_player_opened_at: None,
+            voice_player_user_dragged: false,
             dashboard,
             modal: None,
             snip: None,
             hud: None,
             hud_expires_at: None,
+            voice_player: None,
             pending_replace_prev_clip: None,
             pending_target_hwnd: 0,
             translation_seq: 0,
+            audio_player: AudioPlayer::new(),
+            pending_voice_launch: None,
         };
 
         if app.config.auto_check_updates {
@@ -351,6 +393,8 @@ impl LanghianApp {
             "Langhian Screenshot Capture".to_string()
         } else if Some(window) == self.hud_id {
             "Langhian HUD".to_string()
+        } else if Some(window) == self.voice_player_id {
+            self.i18n.t("voice_player.title")
         } else {
             format!(
                 "{} — {}",
@@ -370,11 +414,22 @@ impl LanghianApp {
             window::events().map(|(id, ev)| Message::WindowEventOccurred(id, ev)),
         ];
 
-        if self.hud_expires_at.is_some() {
+        if self.hud_expires_at.is_some() || self.hud.as_ref().is_some_and(|h| h.is_loading) {
             subs.push(iced::time::every(Duration::from_millis(250)).map(|_| Message::HudTick));
         }
 
-        if self.modal_id.is_some() || self.snip_id.is_some() {
+        if self.modal.as_ref().is_some_and(|m| m.voice_is_playing)
+            || self.dashboard.manual_voice_playing
+            || self.voice_player.as_ref().is_some_and(|v| v.is_playing)
+        {
+            subs.push(iced::time::every(Duration::from_millis(250)).map(|_| Message::AudioTick));
+        }
+
+        if self.modal_id.is_some()
+            || self.snip_id.is_some()
+            || self.pending_voice_launch.is_some()
+            || self.hud.as_ref().is_some_and(|h| h.is_loading)
+        {
             subs.push(keyboard::listen().filter_map(|event| match event {
                 keyboard::Event::KeyPressed {
                     key: keyboard::Key::Named(Named::Escape),
@@ -410,6 +465,11 @@ impl LanghianApp {
                     }
                     WindowKind::Snip => self.snip_id = Some(id),
                     WindowKind::Hud => self.hud_id = Some(id),
+                    WindowKind::VoicePlayer => {
+                        self.voice_player_id = Some(id);
+                        self.voice_player_opened_at = Some(Instant::now());
+                        self.voice_player_user_dragged = false;
+                    }
                 }
                 Task::none()
             }
@@ -444,6 +504,15 @@ impl LanghianApp {
                                 .unwrap_or(true);
                         if settled {
                             self.config.modal_position = Some([pos.x, pos.y]);
+                        }
+                    } else if Some(id) == self.voice_player_id {
+                        let settled = self.voice_player_user_dragged
+                            || self
+                                .voice_player_opened_at
+                                .map(|t| t.elapsed() >= Duration::from_millis(350))
+                                .unwrap_or(true);
+                        if settled {
+                            self.config.voice_player_position = Some([pos.x, pos.y]);
                         }
                     }
                     Task::none()
@@ -578,21 +647,58 @@ impl LanghianApp {
                     self.snip = None;
                     return window::close(id);
                 }
+                if self.pending_voice_launch.take().is_some()
+                    || self.hud.as_ref().is_some_and(|h| h.is_loading)
+                {
+                    self.audio_player.stop();
+                    self.mark_all_audio_stopped();
+                    self.translation_seq = self.translation_seq.wrapping_add(1);
+                    if self.modal_id.is_none() {
+                        self.modal = None;
+                    }
+                    return self.dismiss_loading_hud();
+                }
                 if self.modal_id.is_some() {
                     return self.close_modal();
                 }
                 Task::none()
             }
 
+            Message::CancelVoiceGeneration => {
+                self.pending_voice_launch = None;
+                self.audio_player.stop();
+                self.mark_all_audio_stopped();
+                self.translation_seq = self.translation_seq.wrapping_add(1);
+                if self.modal_id.is_none() {
+                    self.modal = None;
+                }
+                self.dismiss_loading_hud()
+            }
+
             Message::HudTick => {
+                if let Some(h) = self.hud.as_mut()
+                    && h.is_loading
+                {
+                    h.anim_phase = h.anim_phase.wrapping_add(1);
+                }
                 if let Some(exp) = self.hud_expires_at
                     && Instant::now() >= exp
                 {
-                    self.hud_expires_at = None;
-                    self.hud = None;
-                    if let Some(id) = self.hud_id.take() {
-                        return window::close(id);
+                    return self.dismiss_hud();
+                }
+                Task::none()
+            }
+
+            Message::AudioTick => {
+                let playing = self.audio_player.is_playing();
+                if playing {
+                    if let Some(vp) = self.voice_player.as_mut()
+                        && vp.is_playing
+                    {
+                        vp.anim_phase = vp.anim_phase.wrapping_add(1);
                     }
+                } else {
+                    self.mark_all_audio_stopped();
                 }
                 Task::none()
             }
@@ -607,21 +713,116 @@ impl LanghianApp {
                 if seq != self.translation_seq {
                     return Task::none();
                 }
+                let pending_launch = self
+                    .pending_voice_launch
+                    .take()
+                    .filter(|pending| pending.seq == seq);
+
+                if let Some(launch) = pending_launch
+                    && self.modal_id.is_none()
+                {
+                    let src_record = self
+                        .modal
+                        .take()
+                        .map(|m| {
+                            if m.screenshot_png.is_some() {
+                                "[Screenshot]".to_string()
+                            } else {
+                                m.source_text
+                            }
+                        })
+                        .unwrap_or_default();
+
+                    match result {
+                        Ok(outcome) => {
+                            let translated = outcome.translated_text;
+                            self.record_history(mode, src_record, translated, effective_target);
+
+                            if let Some(audio) = outcome.voice_audio {
+                                self.audio_player.stop();
+                                self.mark_all_audio_stopped();
+                                match self.audio_player.play(&audio) {
+                                    Ok(()) => {
+                                        let model_name = self
+                                            .config
+                                            .resolved_voice_model()
+                                            .map(|m| m.name.clone())
+                                            .unwrap_or_default();
+                                        let voice_name = outcome
+                                            .voice_used
+                                            .unwrap_or_else(|| self.config.voice_name.clone());
+                                        self.voice_player = Some(VoicePlayerState::new(
+                                            audio, model_name, voice_name,
+                                        ));
+                                        let dismiss_task = self.dismiss_loading_hud();
+                                        let vp_task = self.open_voice_player_at(
+                                            launch.anchor_phys,
+                                            launch.cursor_phys,
+                                        );
+                                        return Task::batch([dismiss_task, vp_task]);
+                                    }
+                                    Err(err) => {
+                                        return self.show_hud_toast(
+                                            self.i18n.t("app.status_error"),
+                                            Some(err),
+                                            true,
+                                        );
+                                    }
+                                }
+                            }
+                            return self.dismiss_loading_hud();
+                        }
+                        Err(fail) => {
+                            return self.show_hud_toast(
+                                self.i18n.t("app.status_error"),
+                                Some(fail.message),
+                                true,
+                            );
+                        }
+                    }
+                }
+
+                let dismiss_task = self.dismiss_loading_hud();
                 let Some(modal) = self.modal.as_mut() else {
-                    return Task::none();
+                    return dismiss_task;
                 };
                 modal.is_loading = false;
                 modal.effective_target_lang = effective_target.clone();
                 modal.was_auto_reversed = was_auto_reversed;
                 match result {
-                    Ok((translated, detected)) => {
+                    Ok(outcome) => {
+                        let translated = outcome.translated_text;
                         modal.translated_text = translated.clone();
-                        modal.output_editor = text_editor::Content::with_text(&translated);
+                        modal.output_editor = rtl_editor::Content::with_text(&translated);
                         modal.output_force_selectable = false;
-                        modal.detected_source_lang = detected;
+                        modal.detected_source_lang = outcome.detected_source_lang;
                         modal.error_message = None;
                         modal.is_vision_error = false;
                         modal.copied_output = false;
+                        modal.voice_used = outcome.voice_used;
+                        modal.show_voice_transcript = false;
+
+                        if let Some(audio) = outcome.voice_audio {
+                            self.audio_player.stop();
+                            match self.audio_player.play(&audio) {
+                                Ok(()) => {
+                                    modal.voice_is_playing = true;
+                                    self.dashboard.manual_voice_playing = false;
+                                    if let Some(vp) = self.voice_player.as_mut() {
+                                        vp.is_playing = false;
+                                    }
+                                }
+                                Err(err) => {
+                                    modal.error_message = Some(err);
+                                    modal.voice_is_playing = false;
+                                }
+                            }
+                            modal.voice_audio = Some(audio);
+                        } else {
+                            modal.voice_audio = None;
+                            modal.voice_is_playing = false;
+                        }
+
                         let src_record = if modal.screenshot_png.is_some() {
                             "[Screenshot]".to_string()
                         } else {
@@ -632,9 +833,18 @@ impl LanghianApp {
                     Err(fail) => {
                         modal.error_message = Some(fail.message);
                         modal.is_vision_error = fail.is_vision;
+                        modal.voice_audio = None;
+                        modal.voice_is_playing = false;
                     }
                 }
-                Task::none()
+                if self.modal_id.is_none()
+                    && let Some(launch) = pending_launch
+                {
+                    let modal_task =
+                        self.open_modal_window_at(launch.anchor_phys, launch.cursor_phys);
+                    return Task::batch([dismiss_task, modal_task]);
+                }
+                dismiss_task
             }
 
             Message::InPlaceFlowFinished(res) => match res {
@@ -669,11 +879,37 @@ impl LanghianApp {
                 self.dashboard.manual_auto_reversed = was_auto_reversed;
                 self.dashboard.manual_effective_target = Some(effective_target.clone());
                 match result {
-                    Ok((translated, _)) => {
+                    Ok(outcome) => {
+                        let translated = outcome.translated_text;
                         self.dashboard.manual_output = translated.clone();
                         self.dashboard.translate_error = None;
                         self.dashboard.save_term = self.dashboard.source_editor.text();
                         self.dashboard.save_translation = translated.clone();
+                        self.dashboard.manual_voice_used = outcome.voice_used;
+
+                        if let Some(audio) = outcome.voice_audio {
+                            self.audio_player.stop();
+                            match self.audio_player.play(&audio) {
+                                Ok(()) => {
+                                    self.dashboard.manual_voice_playing = true;
+                                    if let Some(m) = self.modal.as_mut() {
+                                        m.voice_is_playing = false;
+                                    }
+                                    if let Some(vp) = self.voice_player.as_mut() {
+                                        vp.is_playing = false;
+                                    }
+                                }
+                                Err(err) => {
+                                    self.dashboard.translate_error = Some(err);
+                                    self.dashboard.manual_voice_playing = false;
+                                }
+                            }
+                            self.dashboard.manual_voice_audio = Some(audio);
+                        } else {
+                            self.dashboard.manual_voice_audio = None;
+                            self.dashboard.manual_voice_playing = false;
+                        }
+
                         self.record_history(
                             TranslationMode::Manual,
                             self.dashboard.source_editor.text(),
@@ -683,6 +919,35 @@ impl LanghianApp {
                     }
                     Err(fail) => {
                         self.dashboard.translate_error = Some(fail.message);
+                        self.dashboard.manual_voice_audio = None;
+                        self.dashboard.manual_voice_playing = false;
+                        self.dashboard.manual_voice_used = None;
+                    }
+                }
+                self.dismiss_loading_hud()
+            }
+
+            Message::TestVoiceFinished(res) => {
+                self.dashboard.voice_testing = false;
+                match res {
+                    Ok((audio, voice_used)) => {
+                        self.audio_player.stop();
+                        self.dashboard.manual_voice_playing = false;
+                        if let Some(m) = self.modal.as_mut() {
+                            m.voice_is_playing = false;
+                        }
+                        if let Err(err) = self.audio_player.play(&audio) {
+                            self.dashboard.settings_error = Some(err);
+                        } else {
+                            self.dashboard.settings_error = None;
+                            self.dashboard.settings_toast = Some(format!(
+                                "{} ({voice_used})",
+                                self.i18n.t("translate.voice_playing")
+                            ));
+                        }
+                    }
+                    Err(e) => {
+                        self.dashboard.settings_error = Some(e);
                     }
                 }
                 Task::none()
@@ -692,9 +957,15 @@ impl LanghianApp {
                 if let Some(ed) = self.dashboard.model_editor.as_mut() {
                     ed.is_probing = false;
                     match res {
-                        Ok((vision, msg)) => {
-                            ed.supports_vision = vision;
-                            ed.vision_source = langhian_core::CapabilitySource::AutoDetected;
+                        Ok((vision, audio, msg)) => {
+                            if let Some(vis) = vision {
+                                ed.supports_vision = vis;
+                                ed.vision_source = langhian_core::CapabilitySource::AutoDetected;
+                            }
+                            if let Some(aud) = audio {
+                                ed.supports_audio = aud;
+                                ed.audio_source = langhian_core::CapabilitySource::AutoDetected;
+                            }
                             ed.probe_status = Some((true, msg));
                         }
                         Err(e) => {
@@ -757,6 +1028,7 @@ impl LanghianApp {
             Message::Dashboard(msg) => self.update_dashboard(msg),
             Message::Modal(msg) => self.update_modal(msg),
             Message::Snip(ev) => self.update_snip(ev),
+            Message::VoicePlayer(msg) => self.update_voice_player(msg),
             Message::ClearCopyBadge { target, seq } => {
                 match target {
                     CopyBadgeTarget::ModalSource => {
@@ -809,7 +1081,13 @@ impl LanghianApp {
         if Some(window) == self.hud_id
             && let Some(hud) = &self.hud
         {
-            return view_hud(hud, self.config.theme, &self.i18n);
+            let on_cancel = hud.is_loading.then_some(Message::CancelVoiceGeneration);
+            return view_hud(hud, self.config.theme, &self.i18n, on_cancel);
+        }
+        if Some(window) == self.voice_player_id
+            && let Some(vp) = &self.voice_player
+        {
+            return view_voice_player(vp, self.config.theme, &self.i18n).map(Message::VoicePlayer);
         }
 
         let content: Element<'_, DashboardMsg> = container(view_dashboard(
@@ -841,6 +1119,9 @@ impl LanghianApp {
             self.hud_expires_at = None;
             return window::close(id);
         }
+        if Some(id) == self.voice_player_id {
+            return self.close_voice_player();
+        }
         if Some(id) == self.dashboard_id {
             self.dashboard_id = None;
             self.dashboard_opening = false;
@@ -851,6 +1132,9 @@ impl LanghianApp {
     }
 
     fn close_modal(&mut self) -> Task<Message> {
+        self.audio_player.stop();
+        self.mark_all_audio_stopped();
+        self.pending_voice_launch = None;
         self.modal = None;
         self.modal_opened_at = None;
         self.modal_has_focused = false;
@@ -860,6 +1144,84 @@ impl LanghianApp {
             window::close(id)
         } else {
             Task::none()
+        }
+    }
+
+    fn close_voice_player(&mut self) -> Task<Message> {
+        self.audio_player.stop();
+        self.mark_all_audio_stopped();
+        self.voice_player = None;
+        self.voice_player_opened_at = None;
+        self.voice_player_user_dragged = false;
+        let _ = self.storage.save_config(&self.config);
+        if let Some(id) = self.voice_player_id.take() {
+            window::close(id)
+        } else {
+            Task::none()
+        }
+    }
+
+    fn mark_all_audio_stopped(&mut self) {
+        if let Some(m) = self.modal.as_mut() {
+            m.voice_is_playing = false;
+        }
+        self.dashboard.manual_voice_playing = false;
+        if let Some(vp) = self.voice_player.as_mut() {
+            vp.is_playing = false;
+        }
+    }
+
+    fn update_voice_player(&mut self, msg: VoicePlayerMsg) -> Task<Message> {
+        match msg {
+            VoicePlayerMsg::DragWindow => {
+                self.voice_player_user_dragged = true;
+                if let Some(id) = self.voice_player_id {
+                    window::drag(id)
+                } else {
+                    Task::none()
+                }
+            }
+            VoicePlayerMsg::TogglePlay => {
+                let Some(vp) = self.voice_player.as_mut() else {
+                    return Task::none();
+                };
+                if vp.is_playing {
+                    self.audio_player.stop();
+                    vp.is_playing = false;
+                    return Task::none();
+                }
+                let audio = vp.audio.clone();
+                self.audio_player.stop();
+                match self.audio_player.play(&audio) {
+                    Ok(()) => {
+                        if let Some(m) = self.modal.as_mut() {
+                            m.voice_is_playing = false;
+                        }
+                        self.dashboard.manual_voice_playing = false;
+                        if let Some(vp) = self.voice_player.as_mut() {
+                            vp.is_playing = true;
+                        }
+                        Task::none()
+                    }
+                    Err(err) => {
+                        self.show_hud_toast(self.i18n.t("app.status_error"), Some(err), true)
+                    }
+                }
+            }
+            VoicePlayerMsg::Minimize => {
+                if let Some(id) = self.voice_player_id {
+                    window::minimize(id, true)
+                } else {
+                    Task::none()
+                }
+            }
+            VoicePlayerMsg::Cancel => self.close_voice_player(),
+            VoicePlayerMsg::CloseHovered(hovered) => {
+                if let Some(vp) = self.voice_player.as_mut() {
+                    vp.close_hovered = hovered;
+                }
+                Task::none()
+            }
         }
     }
 
@@ -885,6 +1247,17 @@ impl LanghianApp {
             TrayAction::ScreenshotTranslate => self.start_screenshot_capture(),
             TrayAction::SelectModel(id) => {
                 self.config.active_model_id = id;
+                let _ = self.storage.save_config(&self.config);
+                self.rebuild_tray();
+                Task::none()
+            }
+            TrayAction::SelectVoiceModel(id) => {
+                self.config.active_voice_model_id = Some(id);
+                if let Some(vp) = self.config.resolved_voice_model().cloned() {
+                    self.config.voice_name =
+                        resolve_voice_for_profile(&vp, &self.config.voice_name);
+                }
+                self.config.ensure_valid();
                 let _ = self.storage.save_config(&self.config);
                 self.rebuild_tray();
                 Task::none()
@@ -998,9 +1371,72 @@ impl LanghianApp {
         anchor_phys: Option<(i32, i32, i32)>,
         cursor_phys: Option<(i32, i32)>,
     ) -> Task<Message> {
+        self.audio_player.stop();
+        self.mark_all_audio_stopped();
         self.modal = Some(modal);
         let translate_task = self.dispatch_modal_translation(mode);
+        let immediate_error = self.modal.as_ref().and_then(|m| m.error_message.clone());
 
+        if self.config.voice_translation_enabled && self.modal_id.is_none() {
+            if let Some(err) = immediate_error {
+                self.modal = None;
+                self.pending_voice_launch = None;
+                return self.show_hud_toast(self.i18n.t("app.status_error"), Some(err), true);
+            }
+            self.pending_voice_launch = Some(PendingModalLaunch {
+                seq: self.translation_seq,
+                anchor_phys,
+                cursor_phys,
+            });
+            let loader_task = self.show_loading_hud(self.i18n.t("hud.generating_voice"), None);
+            return Task::batch([loader_task, translate_task]);
+        }
+
+        self.pending_voice_launch = None;
+        let window_task = self.open_modal_window_at(anchor_phys, cursor_phys);
+        Task::batch([window_task, translate_task])
+    }
+
+    fn open_voice_player_at(
+        &mut self,
+        anchor_phys: Option<(i32, i32, i32)>,
+        cursor_phys: Option<(i32, i32)>,
+    ) -> Task<Message> {
+        const PLAYER_W: f32 = 320.0;
+        const PLAYER_H: f32 = 66.0;
+        let pos_pt = compute_smart_modal_position(
+            self.config.voice_player_position,
+            anchor_phys,
+            cursor_phys,
+            PLAYER_W,
+            PLAYER_H,
+        );
+
+        if let Some(id) = self.voice_player_id {
+            return Task::batch([window::move_to(id, pos_pt), window::minimize(id, false)]);
+        }
+
+        let (_, open) = window::open(window::Settings {
+            size: Size::new(PLAYER_W, PLAYER_H),
+            position: window::Position::Specific(pos_pt),
+            decorations: false,
+            transparent: true,
+            level: window::Level::AlwaysOnTop,
+            resizable: false,
+            icon: self.app_icon.clone(),
+            exit_on_close_request: false,
+            platform_specific: dashboard_platform_specific(),
+            ..Default::default()
+        });
+
+        open.map(|id| Message::WindowOpened(WindowKind::VoicePlayer, id))
+    }
+
+    fn open_modal_window_at(
+        &mut self,
+        anchor_phys: Option<(i32, i32, i32)>,
+        cursor_phys: Option<(i32, i32)>,
+    ) -> Task<Message> {
         let [modal_w, modal_h] = self.config.modal_size.unwrap_or([540.0, 460.0]);
         let modal_w = modal_w.clamp(420.0, 1200.0);
         let modal_h = modal_h.clamp(320.0, 960.0);
@@ -1013,11 +1449,7 @@ impl LanghianApp {
         );
 
         if let Some(id) = self.modal_id {
-            return Task::batch([
-                window::move_to(id, pos_pt),
-                window::gain_focus(id),
-                translate_task,
-            ]);
+            return Task::batch([window::move_to(id, pos_pt), window::gain_focus(id)]);
         }
 
         let (_, open) = window::open(window::Settings {
@@ -1033,28 +1465,139 @@ impl LanghianApp {
             ..Default::default()
         });
 
-        Task::batch([
-            open.map(|id| Message::WindowOpened(WindowKind::Modal, id)),
-            translate_task,
-        ])
+        open.map(|id| Message::WindowOpened(WindowKind::Modal, id))
+    }
+
+    fn resolve_text_profile_for_voice(
+        &self,
+        mut text_profile: ModelProfile,
+        requires_vision: bool,
+    ) -> (ModelProfile, Option<String>) {
+        if !is_dedicated_tts_model(text_profile.provider, &text_profile.model_id)
+            && (!requires_vision || text_profile.supports_vision)
+        {
+            let key = self.secrets.get_api_key(&text_profile.id);
+            return (text_profile, key);
+        }
+
+        if let Some(m) = self
+            .config
+            .models
+            .iter()
+            .filter(|m| {
+                !is_dedicated_tts_model(m.provider, &m.model_id)
+                    && (!requires_vision || m.supports_vision)
+                    && (!m.requires_api_key
+                        || self
+                            .secrets
+                            .get_api_key(&m.id)
+                            .is_some_and(|k| !k.trim().is_empty()))
+            })
+            .min_by_key(|m| {
+                if m.provider == ProviderKind::GoogleTranslateFree {
+                    1
+                } else {
+                    0
+                }
+            })
+            .cloned()
+        {
+            let key = self.secrets.get_api_key(&m.id);
+            return (m, key);
+        }
+
+        if !requires_vision && text_profile.provider == ProviderKind::Gemini {
+            let key = self.secrets.get_api_key(&text_profile.id);
+            if key.as_deref().is_some_and(|k| !k.trim().is_empty()) {
+                let mut fallback = ModelProfile::preset_gemini();
+                fallback.model_id = "gemini-2.5-flash".to_string();
+                return (fallback, key);
+            }
+        }
+
+        if !requires_vision {
+            return (ModelProfile::google_translate_free(), None);
+        }
+
+        text_profile.supports_vision = false;
+        (text_profile, None)
+    }
+
+    fn resolve_translation_pipeline(
+        &self,
+        requires_vision: bool,
+    ) -> Result<ResolvedTranslationPipeline, TranslationFail> {
+        let vision_msg = self.i18n.t("errors.vision_unsupported");
+        let audio_msg = self.i18n.t("errors.audio_unsupported");
+        let base_profile = self.config.active_model().clone();
+
+        if !self.config.voice_translation_enabled {
+            if requires_vision && !base_profile.supports_vision {
+                return Err(TranslationFail {
+                    is_vision: true,
+                    message: vision_msg,
+                });
+            }
+            let key = self.secrets.get_api_key(&base_profile.id);
+            return Ok(ResolvedTranslationPipeline {
+                text_profile: base_profile,
+                text_key: key,
+                voice: None,
+            });
+        }
+
+        let Some(voice_profile) = self.config.resolved_voice_model().cloned() else {
+            return Err(TranslationFail {
+                is_vision: false,
+                message: audio_msg,
+            });
+        };
+        if !voice_profile.supports_audio_output() {
+            return Err(TranslationFail {
+                is_vision: false,
+                message: audio_msg,
+            });
+        }
+
+        let (text_profile, text_key) =
+            self.resolve_text_profile_for_voice(base_profile, requires_vision);
+        if requires_vision && !text_profile.supports_vision {
+            return Err(TranslationFail {
+                is_vision: true,
+                message: vision_msg,
+            });
+        }
+
+        let voice_key = self.secrets.get_api_key(&voice_profile.id);
+        let voice_name = resolve_voice_for_profile(&voice_profile, &self.config.voice_name);
+        Ok(ResolvedTranslationPipeline {
+            text_profile,
+            text_key,
+            voice: Some((voice_profile, voice_key, voice_name)),
+        })
     }
 
     fn dispatch_modal_translation(&mut self, mode: TranslationMode) -> Task<Message> {
         let vision_msg = self.i18n.t("errors.vision_unsupported");
         let key_msg = self.i18n.t("errors.missing_api_key");
         let rate_msg = self.i18n.t("errors.rate_limited");
-        let Some(modal) = self.modal.as_mut() else {
+        let audio_msg = self.i18n.t("errors.audio_unsupported");
+        let voice_enabled = self.config.voice_translation_enabled;
+
+        let Some((src_text, screenshot_png)) = self
+            .modal
+            .as_ref()
+            .map(|m| (m.source_text.clone(), m.screenshot_png.clone()))
+        else {
             return Task::none();
         };
 
-        self.translation_seq = self.translation_seq.wrapping_add(1);
-        let seq = self.translation_seq;
-
+        let requires_vision = screenshot_png.is_some();
         let (input, effective_source, effective_target, was_auto_reversed) =
-            if let Some(png) = &modal.screenshot_png {
+            if let Some(png) = screenshot_png {
                 (
                     TranslateInput::ImagePng {
-                        bytes: png.clone(),
+                        bytes: png,
                         context_hint: None,
                     },
                     "auto".to_string(),
@@ -1063,37 +1606,50 @@ impl LanghianApp {
                 )
             } else {
                 let res = resolve_bidirectional_direction(
-                    &modal.source_text,
+                    &src_text,
                     &self.config.native_language,
                     &self.config.target_language,
                     true,
                     None,
                 );
                 (
-                    TranslateInput::Text(modal.source_text.clone()),
+                    TranslateInput::Text(src_text),
                     res.effective_source,
                     res.effective_target,
                     res.was_reversed,
                 )
             };
 
+        let pipeline = self.resolve_translation_pipeline(requires_vision);
+        let Some(modal) = self.modal.as_mut() else {
+            return Task::none();
+        };
         modal.effective_target_lang = effective_target.clone();
         modal.was_auto_reversed = was_auto_reversed;
+        modal.voice_mode = voice_enabled;
+        modal.voice_audio = None;
+        modal.voice_used = None;
+        modal.voice_is_playing = false;
+        modal.show_voice_transcript = false;
 
-        let profile = self.config.active_model().clone();
-        if matches!(input, TranslateInput::ImagePng { .. }) && !profile.supports_vision {
-            modal.is_loading = false;
-            modal.is_vision_error = true;
-            modal.error_message = Some(vision_msg);
-            return Task::none();
-        }
+        let pipeline = match pipeline {
+            Ok(parts) => parts,
+            Err(fail) => {
+                modal.is_loading = false;
+                modal.is_vision_error = fail.is_vision;
+                modal.error_message = Some(fail.message);
+                return Task::none();
+            }
+        };
+
+        self.translation_seq = self.translation_seq.wrapping_add(1);
+        let seq = self.translation_seq;
 
         modal.is_loading = true;
         modal.error_message = None;
         modal.is_vision_error = false;
         modal.copied_output = false;
 
-        let api_key = self.secrets.get_api_key(&profile.id);
         let req = TranslateRequest {
             input,
             source_lang: effective_source,
@@ -1104,12 +1660,9 @@ impl LanghianApp {
         let client = self.client.clone();
 
         Task::perform(
-            async move {
-                match client.translate(&profile, api_key.as_deref(), &req).await {
-                    Ok(r) => Ok((r.translated_text, r.detected_source_lang)),
-                    Err(e) => Err(map_provider_error(e, &vision_msg, &key_msg, &rate_msg)),
-                }
-            },
+            run_translation_request(
+                client, pipeline, req, vision_msg, key_msg, rate_msg, audio_msg,
+            ),
             move |result| Message::ModalTranslationFinished {
                 seq,
                 effective_target,
@@ -1170,18 +1723,9 @@ impl LanghianApp {
         }
     }
 
-    fn show_hud_toast(
-        &mut self,
-        title: String,
-        detail: Option<String>,
-        is_error: bool,
-    ) -> Task<Message> {
-        self.hud = Some(HudState {
-            title,
-            detail,
-            is_error,
-        });
-        self.hud_expires_at = Some(Instant::now() + Duration::from_millis(1900));
+    fn open_or_move_hud(&mut self, hud: HudState, expires_at: Option<Instant>) -> Task<Message> {
+        self.hud = Some(hud);
+        self.hud_expires_at = expires_at;
 
         let pos_pt = compute_hud_subtitle_position(current_cursor_pos(), 460.0, 56.0);
         if let Some(id) = self.hud_id {
@@ -1201,6 +1745,40 @@ impl LanghianApp {
             ..Default::default()
         });
         open.map(|id| Message::WindowOpened(WindowKind::Hud, id))
+    }
+
+    fn show_hud_toast(
+        &mut self,
+        title: String,
+        detail: Option<String>,
+        is_error: bool,
+    ) -> Task<Message> {
+        self.open_or_move_hud(
+            HudState::toast(title, detail, is_error),
+            Some(Instant::now() + Duration::from_millis(1900)),
+        )
+    }
+
+    fn show_loading_hud(&mut self, title: String, detail: Option<String>) -> Task<Message> {
+        self.open_or_move_hud(HudState::loading(title, detail), None)
+    }
+
+    fn dismiss_hud(&mut self) -> Task<Message> {
+        self.hud_expires_at = None;
+        self.hud = None;
+        if let Some(id) = self.hud_id.take() {
+            window::close(id)
+        } else {
+            Task::none()
+        }
+    }
+
+    fn dismiss_loading_hud(&mut self) -> Task<Message> {
+        if self.hud.as_ref().is_some_and(|h| h.is_loading) {
+            self.dismiss_hud()
+        } else {
+            Task::none()
+        }
     }
 
     fn update_snip(&mut self, ev: SnipEvent) -> Task<Message> {
@@ -1395,6 +1973,36 @@ impl LanghianApp {
                 self.dashboard.active_tab = DashboardTab::Models;
                 self.ensure_dashboard_open()
             }
+            ModalMsg::PlayAudio => {
+                if let Some(m) = self.modal.as_mut()
+                    && let Some(audio) = m.voice_audio.as_ref()
+                {
+                    self.audio_player.stop();
+                    self.dashboard.manual_voice_playing = false;
+                    match self.audio_player.play(audio) {
+                        Ok(()) => m.voice_is_playing = true,
+                        Err(e) => {
+                            m.voice_is_playing = false;
+                            m.error_message = Some(e);
+                        }
+                    }
+                }
+                Task::none()
+            }
+            ModalMsg::StopAudio => {
+                self.audio_player.stop();
+                self.dashboard.manual_voice_playing = false;
+                if let Some(m) = self.modal.as_mut() {
+                    m.voice_is_playing = false;
+                }
+                Task::none()
+            }
+            ModalMsg::ToggleVoiceTranscript => {
+                if let Some(m) = self.modal.as_mut() {
+                    m.show_voice_transcript = !m.show_voice_transcript;
+                }
+                Task::none()
+            }
         }
     }
 
@@ -1521,9 +2129,13 @@ impl LanghianApp {
                 let _ = self.storage.save_config(&self.config);
                 if !self.dashboard.manual_output.is_empty() {
                     let prev_out = self.dashboard.manual_output.clone();
-                    self.dashboard.source_editor = text_editor::Content::with_text(&prev_out);
+                    self.dashboard.source_editor = rtl_editor::Content::with_text(&prev_out);
                     self.dashboard.manual_output.clear();
                 }
+                self.audio_player.stop();
+                self.dashboard.manual_voice_audio = None;
+                self.dashboard.manual_voice_playing = false;
+                self.dashboard.manual_voice_used = None;
                 Task::none()
             }
             DashboardMsg::SelectModel(id) => {
@@ -1543,6 +2155,10 @@ impl LanghianApp {
                 if text_val.trim().is_empty() {
                     return Task::none();
                 }
+                self.audio_player.stop();
+                self.dashboard.manual_voice_playing = false;
+                self.dashboard.manual_voice_audio = None;
+                self.dashboard.manual_voice_used = None;
                 self.translation_seq = self.translation_seq.wrapping_add(1);
                 let seq = self.translation_seq;
                 self.dashboard.is_translating = true;
@@ -1570,8 +2186,14 @@ impl LanghianApp {
                 self.dashboard.manual_auto_reversed = was_auto_reversed;
                 self.dashboard.manual_effective_target = Some(effective_target.clone());
 
-                let profile = self.config.active_model().clone();
-                let api_key = self.secrets.get_api_key(&profile.id);
+                let pipeline = match self.resolve_translation_pipeline(false) {
+                    Ok(parts) => parts,
+                    Err(fail) => {
+                        self.dashboard.is_translating = false;
+                        self.dashboard.translate_error = Some(fail.message);
+                        return Task::none();
+                    }
+                };
                 let req = TranslateRequest {
                     input: TranslateInput::Text(text_val),
                     source_lang: effective_source,
@@ -1579,30 +2201,62 @@ impl LanghianApp {
                     prompt: self.config.active_prompt().clone(),
                     preserve_markdown: self.config.preserve_markdown,
                 };
+                let has_voice = pipeline.voice.is_some();
                 let client = self.client.clone();
                 let vision_msg = self.i18n.t("errors.vision_unsupported");
                 let key_msg = self.i18n.t("errors.missing_api_key");
                 let rate_msg = self.i18n.t("errors.rate_limited");
+                let audio_msg = self.i18n.t("errors.audio_unsupported");
 
-                Task::perform(
-                    async move {
-                        match client.translate(&profile, api_key.as_deref(), &req).await {
-                            Ok(r) => Ok((r.translated_text, r.detected_source_lang)),
-                            Err(e) => Err(map_provider_error(e, &vision_msg, &key_msg, &rate_msg)),
-                        }
-                    },
+                let hud_task = if has_voice {
+                    self.show_loading_hud(self.i18n.t("hud.generating_voice"), None)
+                } else {
+                    Task::none()
+                };
+
+                let work_task = Task::perform(
+                    run_translation_request(
+                        client, pipeline, req, vision_msg, key_msg, rate_msg, audio_msg,
+                    ),
                     move |result| Message::ManualTranslateFinished {
                         seq,
                         effective_target,
                         was_auto_reversed,
                         result,
                     },
-                )
+                );
+                Task::batch([hud_task, work_task])
+            }
+            DashboardMsg::PlayManualVoice => {
+                if let Some(audio) = self.dashboard.manual_voice_audio.clone() {
+                    self.audio_player.stop();
+                    self.mark_all_audio_stopped();
+                    match self.audio_player.play(&audio) {
+                        Ok(()) => {
+                            self.dashboard.manual_voice_playing = true;
+                            self.dashboard.translate_error = None;
+                        }
+                        Err(e) => {
+                            self.dashboard.manual_voice_playing = false;
+                            self.dashboard.translate_error = Some(e);
+                        }
+                    }
+                }
+                Task::none()
+            }
+            DashboardMsg::StopManualVoice => {
+                self.audio_player.stop();
+                self.dashboard.manual_voice_playing = false;
+                Task::none()
             }
             DashboardMsg::TriggerScreenshot => self.start_screenshot_capture(),
             DashboardMsg::ClearManual => {
-                self.dashboard.source_editor = text_editor::Content::new();
+                self.audio_player.stop();
+                self.dashboard.source_editor = rtl_editor::Content::new();
                 self.dashboard.manual_output.clear();
+                self.dashboard.manual_voice_audio = None;
+                self.dashboard.manual_voice_playing = false;
+                self.dashboard.manual_voice_used = None;
                 self.dashboard.translate_error = None;
                 self.dashboard.manual_auto_reversed = false;
                 self.dashboard.manual_effective_target = None;
@@ -1676,7 +2330,7 @@ impl LanghianApp {
                         tgt,
                     );
                     self.dashboard.show_save_vocab_box = false;
-                    self.dashboard.save_notes_editor = text_editor::Content::new();
+                    self.dashboard.save_notes_editor = rtl_editor::Content::new();
                 }
                 Task::none()
             }
@@ -1761,6 +2415,7 @@ impl LanghianApp {
                             ed.base_url = "https://translate.googleapis.com".to_string();
                             ed.model_id = "gtx-free".to_string();
                             ed.supports_vision = false;
+                            ed.supports_audio = false;
                         }
                         ProviderKind::OpenAiCompatible => {
                             if ed.base_url.is_empty()
@@ -1770,6 +2425,7 @@ impl LanghianApp {
                                 ed.base_url = "https://openrouter.ai/api/v1".to_string();
                             }
                             ed.supports_vision = infer_vision_capability(kind, &ed.model_id);
+                            ed.supports_audio = infer_audio_capability(kind, &ed.model_id);
                         }
                         ProviderKind::Anthropic => {
                             ed.base_url = "https://api.anthropic.com".to_string();
@@ -1777,6 +2433,7 @@ impl LanghianApp {
                                 ed.model_id = "claude-sonnet-4-20250514".to_string();
                             }
                             ed.supports_vision = infer_vision_capability(kind, &ed.model_id);
+                            ed.supports_audio = false;
                         }
                         ProviderKind::Gemini => {
                             ed.base_url = "https://generativelanguage.googleapis.com".to_string();
@@ -1784,6 +2441,7 @@ impl LanghianApp {
                                 ed.model_id = "gemini-2.5-flash".to_string();
                             }
                             ed.supports_vision = infer_vision_capability(kind, &ed.model_id);
+                            ed.supports_audio = infer_audio_capability(kind, &ed.model_id);
                         }
                     }
                 }
@@ -1800,6 +2458,9 @@ impl LanghianApp {
                     ed.model_id = v.clone();
                     if ed.vision_source != langhian_core::CapabilitySource::ManualOverride {
                         ed.supports_vision = infer_vision_capability(ed.provider, &v);
+                    }
+                    if ed.audio_source != langhian_core::CapabilitySource::ManualOverride {
+                        ed.supports_audio = infer_audio_capability(ed.provider, &v);
                     }
                 }
                 Task::none()
@@ -1836,9 +2497,22 @@ impl LanghianApp {
                 }
                 Task::none()
             }
+            DashboardMsg::ToggleModelAudio(v) => {
+                if let Some(ed) = self.dashboard.model_editor.as_mut() {
+                    ed.supports_audio = v;
+                    ed.audio_source = langhian_core::CapabilitySource::ManualOverride;
+                }
+                Task::none()
+            }
             DashboardMsg::ModelCatalogFilterChanged(q) => {
                 if let Some(ed) = self.dashboard.model_editor.as_mut() {
                     ed.catalog_filter = q;
+                }
+                Task::none()
+            }
+            DashboardMsg::ToggleCatalogAudioOnly => {
+                if let Some(ed) = self.dashboard.model_editor.as_mut() {
+                    ed.catalog_audio_only = !ed.catalog_audio_only;
                 }
                 Task::none()
             }
@@ -1861,6 +2535,12 @@ impl LanghianApp {
                     } else if ed.vision_source != langhian_core::CapabilitySource::ManualOverride {
                         ed.supports_vision = infer_vision_capability(ed.provider, &entry.id);
                     }
+                    if let Some(aud) = entry.supports_audio {
+                        ed.supports_audio = aud;
+                        ed.audio_source = langhian_core::CapabilitySource::AutoDetected;
+                    } else if ed.audio_source != langhian_core::CapabilitySource::ManualOverride {
+                        ed.supports_audio = infer_audio_capability(ed.provider, &entry.id);
+                    }
                 }
                 Task::none()
             }
@@ -1882,7 +2562,7 @@ impl LanghianApp {
                         client
                             .probe_model(&profile, key.as_deref())
                             .await
-                            .map(|p| (p.detected_vision.unwrap_or(false), p.detail))
+                            .map(|p| (p.detected_vision, p.detected_audio, p.detail))
                             .map_err(|e| e.to_string())
                     },
                     Message::ProbeModelFinished,
@@ -1918,14 +2598,20 @@ impl LanghianApp {
                 self.dashboard.selected_preset_kind = None;
                 let profile = build_profile_from_editor(&ed);
                 let pid = profile.id.clone();
+                let is_tts_only = is_dedicated_tts_model(profile.provider, &profile.model_id);
                 let _ = self.secrets.set_api_key(&pid, &ed.api_key);
 
                 if let Some(existing) = self.config.models.iter_mut().find(|m| m.id == pid) {
                     *existing = profile;
                 } else {
                     self.config.models.push(profile);
-                    self.config.active_model_id = pid;
+                    if is_tts_only {
+                        self.config.active_voice_model_id = Some(pid);
+                    } else {
+                        self.config.active_model_id = pid;
+                    }
                 }
+                self.config.ensure_valid();
                 let _ = self.storage.save_config(&self.config);
                 self.rebuild_tray();
                 Task::none()
@@ -2073,7 +2759,7 @@ impl LanghianApp {
                     self.add_vocab_entry(t, tr, n);
                     self.dashboard.new_vocab_term.clear();
                     self.dashboard.new_vocab_translation.clear();
-                    self.dashboard.new_vocab_notes_editor = text_editor::Content::new();
+                    self.dashboard.new_vocab_notes_editor = rtl_editor::Content::new();
                     self.dashboard.show_add_vocab_form = false;
                 }
                 Task::none()
@@ -2199,6 +2885,84 @@ impl LanghianApp {
                 let _ = self.storage.save_config(&self.config);
                 Task::none()
             }
+            DashboardMsg::ToggleVoiceTranslation(v) => {
+                self.config.voice_translation_enabled = v;
+                if v {
+                    self.dashboard.settings_error = None;
+                } else {
+                    self.audio_player.stop();
+                    self.mark_all_audio_stopped();
+                    self.pending_voice_launch = None;
+                    let close_vp = self.close_voice_player();
+                    let dismiss_hud = self.dismiss_loading_hud();
+                    let _ = self.storage.save_config(&self.config);
+                    return Task::batch([close_vp, dismiss_hud]);
+                }
+                let _ = self.storage.save_config(&self.config);
+                Task::none()
+            }
+            DashboardMsg::SelectVoiceModel(id) => {
+                self.config.active_voice_model_id = id;
+                if let Some(vp) = self.config.resolved_voice_model().cloned() {
+                    self.config.voice_name =
+                        resolve_voice_for_profile(&vp, &self.config.voice_name);
+                }
+                self.config.ensure_valid();
+                self.dashboard.settings_error = None;
+                let _ = self.storage.save_config(&self.config);
+                self.rebuild_tray();
+                Task::none()
+            }
+            DashboardMsg::SelectVoiceName(name) => {
+                self.config.voice_name = name;
+                self.dashboard.settings_error = None;
+                let _ = self.storage.save_config(&self.config);
+                Task::none()
+            }
+            DashboardMsg::TestVoicePreview => {
+                let Some(voice_profile) = self.config.resolved_voice_model().cloned() else {
+                    self.dashboard.settings_error = Some(self.i18n.t("errors.audio_unsupported"));
+                    return Task::none();
+                };
+                if !voice_profile.supports_audio_output() {
+                    self.dashboard.settings_error = Some(self.i18n.t("errors.audio_unsupported"));
+                    return Task::none();
+                }
+                let voice_key = self.secrets.get_api_key(&voice_profile.id);
+                let voice_name = resolve_voice_for_profile(&voice_profile, &self.config.voice_name);
+                let sample_text = match self.config.target_language.as_str() {
+                    "fa" => "سلام! صدای ترجمه آماده پخش است.",
+                    "de" => "Hallo! Die Sprachausgabe der Übersetzung funktioniert.",
+                    "fr" => "Bonjour ! La traduction vocale est prête.",
+                    "es" => "¡Hola! La traducción por voz está lista.",
+                    "tr" => "Merhaba! Sesli çeviri kullanıma hazır.",
+                    "ar" => "مرحباً! الترجمة الصوتية جاهزة الآن.",
+                    _ => "Hello! Your voice translation audio is working cleanly.",
+                };
+                self.dashboard.voice_testing = true;
+                self.dashboard.settings_error = None;
+                let client = self.client.clone();
+                let key_msg = self.i18n.t("errors.missing_api_key");
+                let audio_msg = self.i18n.t("errors.audio_unsupported");
+                Task::perform(
+                    async move {
+                        client
+                            .synthesize_speech(
+                                &voice_profile,
+                                voice_key.as_deref(),
+                                sample_text,
+                                &voice_name,
+                            )
+                            .await
+                            .map_err(|e| match e {
+                                ProviderError::MissingApiKey { .. } => key_msg,
+                                ProviderError::AudioUnsupported { .. } => audio_msg,
+                                other => other.to_string(),
+                            })
+                    },
+                    Message::TestVoiceFinished,
+                )
+            }
             DashboardMsg::ToggleAutoCheckUpdates(v) => {
                 self.config.auto_check_updates = v;
                 let _ = self.storage.save_config(&self.config);
@@ -2206,12 +2970,15 @@ impl LanghianApp {
             }
             DashboardMsg::ToggleIncludePrereleases(v) => {
                 self.config.include_prereleases = v;
+                self.dashboard.update_status = None;
+                self.dashboard.update_error = None;
                 let _ = self.storage.save_config(&self.config);
                 Task::none()
             }
             DashboardMsg::ResetModalPosition => {
                 self.config.modal_position = None;
                 self.config.modal_size = None;
+                self.config.voice_player_position = None;
                 let _ = self.storage.save_config(&self.config);
                 self.dashboard.settings_toast = Some(self.i18n.t("settings.saved_toast"));
                 Task::none()
@@ -2482,6 +3249,73 @@ fn map_provider_error(
     }
 }
 
+fn map_voice_provider_error(
+    err: ProviderError,
+    vision_msg: &str,
+    key_msg: &str,
+    rate_msg: &str,
+    audio_msg: &str,
+) -> TranslationFail {
+    match err {
+        ProviderError::AudioUnsupported { .. } => TranslationFail {
+            is_vision: false,
+            message: audio_msg.to_string(),
+        },
+        other => map_provider_error(other, vision_msg, key_msg, rate_msg),
+    }
+}
+
+async fn run_translation_request(
+    client: TranslatorClient,
+    pipeline: ResolvedTranslationPipeline,
+    req: TranslateRequest,
+    vision_msg: String,
+    key_msg: String,
+    rate_msg: String,
+    audio_msg: String,
+) -> Result<ModalTranslationOutcome, TranslationFail> {
+    if let Some((voice_profile, voice_key, voice_name)) = pipeline.voice {
+        match client
+            .translate_with_voice(
+                &pipeline.text_profile,
+                pipeline.text_key.as_deref(),
+                &voice_profile,
+                voice_key.as_deref(),
+                &req,
+                &voice_name,
+            )
+            .await
+        {
+            Ok(v) => Ok(ModalTranslationOutcome {
+                translated_text: v.translated_text,
+                detected_source_lang: v.detected_source_lang,
+                voice_audio: Some(v.audio),
+                voice_used: Some(v.voice_used),
+            }),
+            Err(e) => Err(map_voice_provider_error(
+                e,
+                &vision_msg,
+                &key_msg,
+                &rate_msg,
+                &audio_msg,
+            )),
+        }
+    } else {
+        match client
+            .translate(&pipeline.text_profile, pipeline.text_key.as_deref(), &req)
+            .await
+        {
+            Ok(r) => Ok(ModalTranslationOutcome {
+                translated_text: r.translated_text,
+                detected_source_lang: r.detected_source_lang,
+                voice_audio: None,
+                voice_used: None,
+            }),
+            Err(e) => Err(map_provider_error(e, &vision_msg, &key_msg, &rate_msg)),
+        }
+    }
+}
+
 fn build_profile_from_editor(ed: &ModelEditorState) -> ModelProfile {
     let mut headers = BTreeMap::new();
     for line in ed.headers_raw.lines() {
@@ -2515,6 +3349,8 @@ fn build_profile_from_editor(ed: &ModelEditorState) -> ModelProfile {
         requires_api_key,
         supports_vision: ed.supports_vision,
         vision_source: ed.vision_source,
+        supports_audio: ed.supports_audio,
+        audio_source: ed.audio_source,
         extra_headers: headers,
         temperature: ed.temperature.trim().parse::<f32>().unwrap_or(0.2),
         max_tokens: ed.max_tokens.trim().parse::<u32>().ok(),
