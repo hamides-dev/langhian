@@ -681,23 +681,14 @@ impl LanghianApp {
                 cursor_phys,
                 result,
             } => {
-                let captured = match result {
-                    Ok(c) => c,
-                    Err(_) => {
-                        if self.config.show_hud {
-                            return self.show_hud_toast(
-                                self.i18n.t("app.status_error"),
-                                Some(self.i18n.t("errors.empty_selection")),
-                                true,
-                            );
-                        }
-                        return Task::none();
-                    }
+                let (source_text, prev_clip) = match result {
+                    Ok(c) => (c.text, c.previous_clipboard),
+                    Err(_) => (String::new(), None),
                 };
                 self.pending_target_hwnd = target_hwnd;
-                self.pending_replace_prev_clip = captured.previous_clipboard;
+                self.pending_replace_prev_clip = prev_clip;
                 let modal = ModalState::for_text(
-                    captured.text,
+                    source_text,
                     self.config.modal_pinned,
                     &self.config.native_language,
                 );
@@ -1590,8 +1581,13 @@ impl LanghianApp {
     ) -> Task<Message> {
         self.audio_player.stop();
         self.mark_all_audio_stopped();
+        let has_content = modal.screenshot_png.is_some() || !modal.source_text.trim().is_empty();
         self.modal = Some(modal);
-        let translate_task = self.dispatch_modal_translation(mode, with_voice);
+        let translate_task = if has_content {
+            self.dispatch_modal_translation(mode, with_voice)
+        } else {
+            Task::none()
+        };
         let immediate_error = self.modal.as_ref().and_then(|m| m.error_message.clone());
 
         if with_voice && self.modal_id.is_none() {
