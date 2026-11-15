@@ -2392,6 +2392,7 @@ impl LanghianApp {
 
             DashboardMsg::SwitchTab(tab) => {
                 self.dashboard.active_tab = tab;
+                self.dashboard.translate_open_picker = None;
                 Task::none()
             }
             DashboardMsg::ToggleSidebar => {
@@ -2456,14 +2457,25 @@ impl LanghianApp {
                 self.dashboard.manual_voice_used = None;
                 Task::none()
             }
+            DashboardMsg::ToggleTranslatePicker(kind) => {
+                self.dashboard.translate_open_picker =
+                    if self.dashboard.translate_open_picker == Some(kind) {
+                        None
+                    } else {
+                        Some(kind)
+                    };
+                Task::none()
+            }
             DashboardMsg::SelectModel(id) => {
                 self.config.active_model_id = id;
+                self.dashboard.translate_open_picker = None;
                 let _ = self.storage.save_config(&self.config);
                 self.rebuild_tray();
                 Task::none()
             }
             DashboardMsg::SelectPrompt(id) => {
                 self.config.active_prompt_id = id;
+                self.dashboard.translate_open_picker = None;
                 let _ = self.storage.save_config(&self.config);
                 self.rebuild_tray();
                 Task::none()
@@ -3269,6 +3281,7 @@ impl LanghianApp {
                 }
                 self.config.ensure_valid();
                 self.dashboard.settings_error = None;
+                self.dashboard.translate_open_picker = None;
                 let _ = self.storage.save_config(&self.config);
                 self.rebuild_tray();
                 Task::none()
@@ -3277,6 +3290,7 @@ impl LanghianApp {
                 self.config.active_vision_model_id = id;
                 self.config.ensure_valid();
                 self.dashboard.settings_error = None;
+                self.dashboard.translate_open_picker = None;
                 let _ = self.storage.save_config(&self.config);
                 self.rebuild_tray();
                 Task::none()
