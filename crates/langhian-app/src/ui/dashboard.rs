@@ -15,7 +15,7 @@ use iced::font::Weight;
 use iced::widget::text::Shaping;
 use iced::widget::{
     Space, button, column, container, mouse_area, pick_list, progress_bar, row, text, text_input,
-    toggler,
+    toggler, tooltip,
 };
 use iced::window;
 use iced::{Alignment, Background, Border, Color, Element, Font, Length, Padding};
@@ -154,6 +154,7 @@ pub struct DashboardState {
     pub onboarding: OnboardingState,
     pub is_maximized: bool,
     pub sidebar_collapsed: bool,
+    pub sidebar_user_override: bool,
     pub titlebar_close_hovered: bool,
 
     // Manual Translate tab
@@ -215,6 +216,7 @@ impl DashboardState {
             onboarding: OnboardingState::default(),
             is_maximized: false,
             sidebar_collapsed: false,
+            sidebar_user_override: false,
             titlebar_close_hovered: false,
             source_editor: rtl_editor::Content::new(),
             manual_output: String::new(),
@@ -623,6 +625,29 @@ fn view_custom_titlebar<'a>(
     .on_press(DashboardMsg::DragTitlebar)
     .on_double_click(DashboardMsg::ToggleMaximize);
 
+    let sidebar_icon = if state.sidebar_collapsed {
+        UiIcon::SidebarClosed
+    } else {
+        UiIcon::SidebarOpen
+    };
+    let sidebar_btn = tooltip(
+        square_icon_button(
+            ui_icon(sidebar_icon, 15.0, p.text_secondary),
+            28.0,
+            DashboardMsg::ToggleSidebar,
+            ghost_button_style(mode, false),
+        ),
+        text(i18n.t("nav.toggle_sidebar"))
+            .size(12)
+            .font(ui_font)
+            .color(p.text_primary)
+            .shaping(Shaping::Advanced),
+        tooltip::Position::Bottom,
+    )
+    .gap(6)
+    .padding(6)
+    .style(sidebar_tooltip_style(mode));
+
     let min_btn = square_icon_button(
         ui_icon(UiIcon::Remove, 15.0, p.text_secondary),
         28.0,
@@ -661,7 +686,12 @@ fn view_custom_titlebar<'a>(
 
     let controls = rtl_row(
         is_rtl,
-        vec![min_btn.into(), max_btn.into(), close_btn.into()],
+        vec![
+            sidebar_btn.into(),
+            min_btn.into(),
+            max_btn.into(),
+            close_btn.into(),
+        ],
     )
     .spacing(4)
     .align_y(Alignment::Center);
@@ -679,6 +709,21 @@ fn view_custom_titlebar<'a>(
     .height(Length::Fixed(38.0))
     .style(rounded_titlebar_style(mode, top_radius))
     .into()
+}
+
+fn sidebar_tooltip_style(mode: UiThemeMode) -> impl Fn(&iced::Theme) -> container::Style {
+    move |_theme| {
+        let p = palette_for(mode);
+        container::Style {
+            background: Some(Background::Color(p.bg_elevated)),
+            border: Border {
+                color: p.border_subtle,
+                width: 1.0,
+                radius: 6.0.into(),
+            },
+            ..Default::default()
+        }
+    }
 }
 
 #[allow(clippy::too_many_arguments)]
@@ -712,7 +757,7 @@ fn sidebar_nav_button<'a>(
             is_rtl,
             vec![
                 ui_icon(icon, 17.0, icon_color).into(),
-                aligned_text(label, 13.0, lbl_font, None, is_rtl),
+                aligned_text(label.clone(), 13.0, lbl_font, None, is_rtl),
             ],
         )
         .spacing(10)
@@ -721,12 +766,33 @@ fn sidebar_nav_button<'a>(
         .into()
     };
 
-    button(content)
+    let btn = button(content)
         .on_press(DashboardMsg::SwitchTab(tab))
         .padding(if collapsed { [10, 0] } else { [9, 12] })
         .width(Length::Fill)
-        .style(nav_button_style(mode, is_active))
+        .style(nav_button_style(mode, is_active));
+
+    if collapsed {
+        tooltip(
+            btn,
+            text(label)
+                .size(12)
+                .font(ui_font)
+                .color(p.text_primary)
+                .shaping(Shaping::Advanced),
+            if is_rtl {
+                tooltip::Position::Left
+            } else {
+                tooltip::Position::Right
+            },
+        )
+        .gap(8)
+        .padding(6)
+        .style(sidebar_tooltip_style(mode))
         .into()
+    } else {
+        btn.into()
+    }
 }
 
 #[allow(clippy::too_many_arguments)]
@@ -741,40 +807,6 @@ fn view_sidebar<'a>(
     _ui_font_bold: Font,
 ) -> Element<'a, DashboardMsg> {
     let collapsed = state.sidebar_collapsed;
-
-    let toggle_icon = match (collapsed, is_rtl) {
-        (false, false) | (true, true) => UiIcon::ChevronLeft,
-        (false, true) | (true, false) => UiIcon::ChevronRight,
-    };
-
-    let toggle_btn = button(
-        container(ui_icon(toggle_icon, 16.0, p.text_secondary))
-            .width(Length::Fill)
-            .center_x(Length::Fill),
-    )
-    .on_press(DashboardMsg::ToggleSidebar)
-    .padding([6, 8])
-    .width(if collapsed {
-        Length::Fill
-    } else {
-        Length::Fixed(32.0)
-    })
-    .style(ghost_button_style(mode, false));
-
-    let header_row: Element<'a, DashboardMsg> = if collapsed {
-        container(toggle_btn)
-            .width(Length::Fill)
-            .center_x(Length::Fill)
-            .into()
-    } else {
-        rtl_row(
-            is_rtl,
-            vec![Space::new().width(Length::Fill).into(), toggle_btn.into()],
-        )
-        .width(Length::Fill)
-        .align_y(Alignment::Center)
-        .into()
-    };
 
     let nav_items = [
         (
@@ -831,15 +863,9 @@ fn view_sidebar<'a>(
 
     let bottom_radius = if state.is_maximized { 0.0 } else { 11.0 };
     let sidebar_width = if collapsed { 64.0 } else { 220.0 };
-    let sidebar_pad = if collapsed {
-        Padding::from([12, 10])
-    } else {
-        Padding::from([12, 14])
-    };
 
     container(
         column![
-            header_row,
             nav_col,
             Space::new().height(Length::Fill),
             hairline_divider(mode),
@@ -850,7 +876,11 @@ fn view_sidebar<'a>(
     )
     .width(Length::Fixed(sidebar_width))
     .height(Length::Fill)
-    .padding(sidebar_pad)
+    .padding(if collapsed {
+        Padding::from([16, 10])
+    } else {
+        Padding::from([16, 14])
+    })
     .style(rounded_sidebar_style(mode, bottom_radius, is_rtl))
     .into()
 }

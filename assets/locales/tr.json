@@ -32,7 +32,8 @@
     "prompts": "İstemler",
     "vocabulary": "Kelime Defteri",
     "history": "Geçmiş",
-    "settings": "Ayarlar"
+    "settings": "Ayarlar",
+    "toggle_sidebar": "Kenar Çubuğunu Aç/Kapat"
   },
   "translate": {
     "source_label": "Kaynak Metin",

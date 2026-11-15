@@ -158,6 +158,7 @@ struct LanghianApp {
 enum Message {
     Bridge(BridgeEvent),
     WindowOpened(WindowKind, window::Id),
+    DashboardMonitorSize(Option<Size>),
     WindowEventOccurred(window::Id, window::Event),
     GlobalEscPressed,
     HudTick,
@@ -506,6 +507,9 @@ impl LanghianApp {
                 if !still_expected {
                     return window::close(id);
                 }
+                if kind == WindowKind::Dashboard {
+                    return window::monitor_size(id).map(Message::DashboardMonitorSize);
+                }
                 if kind == WindowKind::Modal {
                     self.modal_opened_at = Some(Instant::now());
                     self.modal_has_focused = false;
@@ -515,6 +519,16 @@ impl LanghianApp {
                 if kind == WindowKind::VoicePlayer {
                     self.voice_player_opened_at = Some(Instant::now());
                     self.voice_player_user_dragged = false;
+                }
+                Task::none()
+            }
+
+            Message::DashboardMonitorSize(maybe_size) => {
+                if !self.dashboard.sidebar_user_override
+                    && let Some(size) = maybe_size
+                    && size.width <= 1280.0
+                {
+                    self.dashboard.sidebar_collapsed = true;
                 }
                 Task::none()
             }
@@ -563,6 +577,9 @@ impl LanghianApp {
                     Task::none()
                 }
                 window::Event::Resized(size) => {
+                    if Some(id) == self.dashboard_id && !self.dashboard.sidebar_user_override {
+                        self.dashboard.sidebar_collapsed = size.width < 960.0;
+                    }
                     if Some(id) == self.modal_id {
                         let settled = self
                             .modal_opened_at
@@ -2364,6 +2381,7 @@ impl LanghianApp {
             }
             DashboardMsg::ToggleSidebar => {
                 self.dashboard.sidebar_collapsed = !self.dashboard.sidebar_collapsed;
+                self.dashboard.sidebar_user_override = true;
                 Task::none()
             }
             DashboardMsg::SwitchSettingsSubTab(sub) => {
@@ -3537,7 +3555,7 @@ fn dashboard_platform_specific() -> window::settings::PlatformSpecific {
 fn open_dashboard_task(icon: Option<window::Icon>) -> (window::Id, Task<Message>) {
     let (id, open) = window::open(window::Settings {
         size: Size::new(1060.0, 720.0),
-        min_size: Some(Size::new(900.0, 600.0)),
+        min_size: Some(Size::new(720.0, 560.0)),
         position: window::Position::Centered,
         decorations: false,
         transparent: true,
