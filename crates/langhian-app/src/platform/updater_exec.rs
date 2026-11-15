@@ -11,7 +11,12 @@ pub fn launch_installer(installer_path: &Path) -> Result<bool, String> {
             .to_ascii_lowercase();
         if ext == "exe" {
             Command::new(installer_path)
-                .args(["/SILENT", "/CLOSEAPPLICATIONS", "/RESTARTAPPLICATIONS"])
+                .args([
+                    "/SILENT",
+                    "/CLOSEAPPLICATIONS",
+                    "/RESTARTAPPLICATIONS",
+                    "/RELAUNCH",
+                ])
                 .spawn()
                 .map_err(|e| format!("Failed to start installer: {e}"))?;
             return Ok(true); // Caller should exit cleanly so installer updates & restarts
