@@ -7,6 +7,7 @@ pub mod input_unix;
 #[cfg(target_os = "windows")]
 pub mod input_win;
 pub mod tray;
+pub mod uia;
 pub mod updater_exec;
 pub mod window_pos;
 

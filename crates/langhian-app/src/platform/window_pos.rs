@@ -142,11 +142,11 @@ fn win_caret_rect_screen(foreground_hwnd: isize) -> Option<(i32, i32, i32)> {
         let mut gui: GUITHREADINFO = std::mem::zeroed();
         gui.cbSize = std::mem::size_of::<GUITHREADINFO>() as u32;
         if GetGUIThreadInfo(thread_id, &mut gui) == 0 || gui.hwndCaret.is_null() {
-            return None;
+            return crate::platform::uia::focused_anchor_rect(foreground_hwnd, false);
         }
         let rc = gui.rcCaret;
         if rc.right <= rc.left && rc.bottom <= rc.top {
-            return None;
+            return crate::platform::uia::focused_anchor_rect(foreground_hwnd, false);
         }
         let mut top_pt = POINT {
             x: rc.left,
@@ -226,4 +226,44 @@ fn is_point_visible_on_desktop(x: f32, y: f32, w: f32, h: f32) -> bool {
         let mh = m.height().unwrap_or(1080) as f32 / s;
         x + w >= mx + 80.0 && x <= mx + mw - 80.0 && y + h >= my + 60.0 && y <= my + mh - 60.0
     })
+}
+
+/// Applies `WS_EX_NOACTIVATE | WS_EX_TOOLWINDOW | WS_EX_TOPMOST` on Windows and shows the
+/// transient HUD without stealing keyboard focus or firing DOM `blur` in browsers/web apps.
+#[cfg(target_os = "windows")]
+pub fn show_window_noactivate(win: &dyn iced::window::Window) {
+    use iced::window::raw_window_handle::RawWindowHandle;
+    use windows_sys::Win32::Foundation::HWND;
+    use windows_sys::Win32::UI::WindowsAndMessaging::{
+        GWL_EXSTYLE, GetWindowLongPtrW, HWND_TOPMOST, SWP_FRAMECHANGED, SWP_NOACTIVATE, SWP_NOMOVE,
+        SWP_NOSIZE, SWP_SHOWWINDOW, SetWindowLongPtrW, SetWindowPos, WS_EX_NOACTIVATE,
+        WS_EX_TOOLWINDOW, WS_EX_TOPMOST,
+    };
+
+    let Ok(handle) = win.window_handle() else {
+        return;
+    };
+    let RawWindowHandle::Win32(h) = handle.as_raw() else {
+        return;
+    };
+    let hwnd = h.hwnd.get() as HWND;
+    if hwnd.is_null() {
+        return;
+    }
+    unsafe {
+        let ex = GetWindowLongPtrW(hwnd, GWL_EXSTYLE);
+        let desired = ex | (WS_EX_NOACTIVATE | WS_EX_TOOLWINDOW | WS_EX_TOPMOST) as isize;
+        if desired != ex {
+            SetWindowLongPtrW(hwnd, GWL_EXSTYLE, desired);
+        }
+        SetWindowPos(
+            hwnd,
+            HWND_TOPMOST,
+            0,
+            0,
+            0,
+            0,
+            SWP_NOMOVE | SWP_NOSIZE | SWP_NOACTIVATE | SWP_SHOWWINDOW | SWP_FRAMECHANGED,
+        );
+    }
 }

@@ -7,15 +7,15 @@ use std::time::Instant;
 use tokio::sync::mpsc::UnboundedSender;
 use windows_sys::Win32::Foundation::{LPARAM, LRESULT, POINT, WPARAM};
 use windows_sys::Win32::UI::Input::KeyboardAndMouse::{
-    GetAsyncKeyState, INPUT, INPUT_0, INPUT_KEYBOARD, KEYBDINPUT, KEYEVENTF_KEYUP, SendInput,
-    VK_CONTROL, VK_DOWN, VK_F1, VK_F12, VK_LCONTROL, VK_LEFT, VK_LMENU, VK_LSHIFT, VK_LWIN,
-    VK_MENU, VK_RCONTROL, VK_RIGHT, VK_RMENU, VK_RSHIFT, VK_RWIN, VK_SHIFT, VK_SPACE, VK_TAB,
-    VK_UP,
+    GetAsyncKeyState, INPUT, INPUT_0, INPUT_KEYBOARD, KEYBDINPUT, KEYEVENTF_EXTENDEDKEY,
+    KEYEVENTF_KEYUP, MAPVK_VK_TO_VSC, MapVirtualKeyW, SendInput, VK_CONTROL, VK_DOWN, VK_F1,
+    VK_F12, VK_LCONTROL, VK_LEFT, VK_LMENU, VK_LSHIFT, VK_LWIN, VK_MENU, VK_RCONTROL, VK_RIGHT,
+    VK_RMENU, VK_RSHIFT, VK_RWIN, VK_SHIFT, VK_SPACE, VK_TAB, VK_UP,
 };
 use windows_sys::Win32::UI::WindowsAndMessaging::{
     CallNextHookEx, DispatchMessageW, GetCursorPos, GetMessageW, HC_ACTION, KBDLLHOOKSTRUCT,
-    LLKHF_INJECTED, MSG, SetWindowsHookExW, TranslateMessage, WH_KEYBOARD_LL, WM_KEYDOWN, WM_KEYUP,
-    WM_SYSKEYDOWN, WM_SYSKEYUP,
+    LLKHF_EXTENDED, LLKHF_INJECTED, MSG, SetWindowsHookExW, TranslateMessage, WH_KEYBOARD_LL,
+    WM_KEYDOWN, WM_KEYUP, WM_SYSKEYDOWN, WM_SYSKEYUP,
 };
 
 struct HookSharedState {
@@ -103,8 +103,15 @@ unsafe fn current_modifiers(exclude_vk: u16) -> ModifierState {
     }
 }
 
-fn mask_alt_menu_activation() {
-    // Inject an unassigned virtual key (0xE8) to dismiss Windows menu-bar activation cleanly
+fn mask_alt_menu_activation_with_release(alt_vk: u16, is_extended: bool) {
+    // Atomically inject unassigned key 0xE8 (down + up) *before* releasing Alt so Windows and
+    // Chromium/Firefox never see a standalone Alt tap (prevents menu focus and DOM blur on 1st Alt).
+    let alt_ext = if is_extended {
+        KEYEVENTF_EXTENDEDKEY
+    } else {
+        0
+    };
+    let alt_scan = unsafe { MapVirtualKeyW(alt_vk as u32, MAPVK_VK_TO_VSC) } as u16;
     unsafe {
         let inputs = [
             INPUT {
@@ -131,8 +138,20 @@ fn mask_alt_menu_activation() {
                     },
                 },
             },
+            INPUT {
+                r#type: INPUT_KEYBOARD,
+                Anonymous: INPUT_0 {
+                    ki: KEYBDINPUT {
+                        wVk: alt_vk,
+                        wScan: alt_scan,
+                        dwFlags: alt_ext | KEYEVENTF_KEYUP,
+                        time: 0,
+                        dwExtraInfo: 0,
+                    },
+                },
+            },
         ];
-        SendInput(2, inputs.as_ptr(), std::mem::size_of::<INPUT>() as i32);
+        SendInput(3, inputs.as_ptr(), std::mem::size_of::<INPUT>() as i32);
     }
 }
 
@@ -182,13 +201,19 @@ unsafe extern "system" fn hook_proc(code: i32, wparam: WPARAM, lparam: LPARAM) -
                     if let Ok(mut down) = shared.alt_is_down.lock() {
                         *down = false;
                     }
-                    let action =
-                        shared.sm.lock().ok().and_then(|mut sm| {
-                            sm.on_modifier_up(ModifierKind::Alt, Instant::now())
-                        });
+                    let (should_mask, action) = shared
+                        .sm
+                        .lock()
+                        .ok()
+                        .map(|mut sm| sm.on_alt_up_with_mask(Instant::now()))
+                        .unwrap_or((false, None));
                     if let Some(act) = action {
-                        mask_alt_menu_activation();
                         let _ = shared.tx.send(act);
+                    }
+                    if should_mask {
+                        let is_extended = (kbd.flags & LLKHF_EXTENDED) != 0 || vk == VK_RMENU;
+                        mask_alt_menu_activation_with_release(vk, is_extended);
+                        return 1;
                     }
                 }
             } else if is_ctrl {

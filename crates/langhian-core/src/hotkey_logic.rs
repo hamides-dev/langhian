@@ -108,23 +108,30 @@ impl InputStateMachine {
         }
     }
 
+    /// Handles an `Alt` release and reports `(should_mask_menu, action)`.
+    ///
+    /// Masking both the first and second clean standalone `Alt` releases prevents Windows/browsers
+    /// from focusing menu bars and blurring active web inputs on the first tap, while leaving
+    /// `Alt+Tab`, `Alt+Shift`, `AltGr`, and other chords untouched.
+    pub fn on_alt_up_with_mask(&mut self, now: Instant) -> (bool, Option<InputAction>) {
+        let was_clean = self.alt_down_clean;
+        self.alt_down_clean = false;
+        if !was_clean || !self.enable_double_alt {
+            return (false, None);
+        }
+        if let Some(prev) = self.last_alt_tap
+            && now.duration_since(prev) <= self.double_tap_window
+        {
+            self.last_alt_tap = None;
+            return (true, Some(InputAction::DoubleTapAlt));
+        }
+        self.last_alt_tap = Some(now);
+        (true, None)
+    }
+
     pub fn on_modifier_up(&mut self, kind: ModifierKind, now: Instant) -> Option<InputAction> {
         match kind {
-            ModifierKind::Alt => {
-                let was_clean = self.alt_down_clean;
-                self.alt_down_clean = false;
-                if !was_clean || !self.enable_double_alt {
-                    return None;
-                }
-                if let Some(prev) = self.last_alt_tap
-                    && now.duration_since(prev) <= self.double_tap_window
-                {
-                    self.last_alt_tap = None;
-                    return Some(InputAction::DoubleTapAlt);
-                }
-                self.last_alt_tap = Some(now);
-                None
-            }
+            ModifierKind::Alt => self.on_alt_up_with_mask(now).1,
             ModifierKind::Ctrl => {
                 let was_clean = self.ctrl_down_clean;
                 self.ctrl_down_clean = false;
@@ -351,6 +358,64 @@ mod tests {
         assert_eq!(
             sm.on_modifier_up(ModifierKind::Alt, t0 + Duration::from_millis(90)),
             None
+        );
+    }
+
+    #[test]
+    fn clean_alt_taps_mask_menu_activation_on_first_and_second_while_chords_do_not() {
+        let mut cfg = ShortcutConfig::default();
+        let mut sm = InputStateMachine::new(&cfg);
+        let t0 = Instant::now();
+
+        // First standalone Alt tap requests menu masking so browser inputs do not blur.
+        sm.on_modifier_down(ModifierKind::Alt, ModifierState::default());
+        assert_eq!(sm.on_alt_up_with_mask(t0), (true, None));
+
+        // Second standalone Alt tap requests menu masking AND triggers DoubleTapAlt.
+        sm.on_modifier_down(ModifierKind::Alt, ModifierState::default());
+        assert_eq!(
+            sm.on_alt_up_with_mask(t0 + Duration::from_millis(140)),
+            (true, Some(InputAction::DoubleTapAlt))
+        );
+
+        // Alt+Tab must never be masked so OS task switching finishes naturally.
+        sm.on_modifier_down(ModifierKind::Alt, ModifierState::default());
+        assert_eq!(
+            sm.on_non_modifier_key_down(
+                "TAB",
+                ModifierState {
+                    alt: true,
+                    ..Default::default()
+                },
+                &cfg
+            ),
+            None
+        );
+        assert_eq!(
+            sm.on_alt_up_with_mask(t0 + Duration::from_millis(260)),
+            (false, None)
+        );
+
+        // AltGr / Ctrl+Alt must never be masked.
+        sm.on_modifier_down(
+            ModifierKind::Alt,
+            ModifierState {
+                ctrl: true,
+                ..Default::default()
+            },
+        );
+        assert_eq!(
+            sm.on_alt_up_with_mask(t0 + Duration::from_millis(300)),
+            (false, None)
+        );
+
+        // Disabled Double-Alt preserves normal Windows Alt menu navigation.
+        cfg.enable_double_alt = false;
+        sm.update_config(&cfg);
+        sm.on_modifier_down(ModifierKind::Alt, ModifierState::default());
+        assert_eq!(
+            sm.on_alt_up_with_mask(t0 + Duration::from_millis(400)),
+            (false, None)
         );
     }
 }

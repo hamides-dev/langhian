@@ -36,8 +36,7 @@ mod win_input {
     use windows_sys::Win32::UI::Input::KeyboardAndMouse::{
         GetAsyncKeyState, INPUT, INPUT_0, INPUT_KEYBOARD, KEYBDINPUT, KEYEVENTF_EXTENDEDKEY,
         KEYEVENTF_KEYUP, MAPVK_VK_TO_VSC, MapVirtualKeyW, SendInput, VK_A, VK_C, VK_CONTROL,
-        VK_LCONTROL, VK_LMENU, VK_LSHIFT, VK_LWIN, VK_MENU, VK_RCONTROL, VK_RMENU, VK_RSHIFT,
-        VK_RWIN, VK_V,
+        VK_LCONTROL, VK_LMENU, VK_LSHIFT, VK_MENU, VK_RCONTROL, VK_RMENU, VK_RSHIFT, VK_V,
     };
     use windows_sys::Win32::UI::WindowsAndMessaging::{GetForegroundWindow, SetForegroundWindow};
 
@@ -51,10 +50,18 @@ mod win_input {
 
     pub fn restore_foreground_window(hwnd: isize) {
         if hwnd != 0 {
-            unsafe {
-                let _ = SetForegroundWindow(hwnd as _);
+            let changed = unsafe {
+                let target = hwnd as windows_sys::Win32::Foundation::HWND;
+                if GetForegroundWindow() != target {
+                    let _ = SetForegroundWindow(target);
+                    true
+                } else {
+                    false
+                }
+            };
+            if changed {
+                thread::sleep(Duration::from_millis(25));
             }
-            thread::sleep(Duration::from_millis(30));
         }
     }
 
@@ -113,31 +120,32 @@ mod win_input {
         }
     }
 
-    /// Release any modifier keys that are not physically held down anymore (or lingering after double-tap).
+    /// Release any modifier keys that are genuinely stuck physically down before injecting Ctrl shortcuts.
+    /// Avoids broadcasting spurious unmasked `VK_MENU` key-up packets that re-trigger browser menu focus.
     pub fn release_stray_modifiers() {
         let mods = [
-            (VK_LMENU, 0u32),
-            (VK_RMENU, KEYEVENTF_EXTENDEDKEY),
-            (VK_MENU, 0),
-            (VK_LCONTROL, 0),
-            (VK_RCONTROL, KEYEVENTF_EXTENDEDKEY),
-            (VK_CONTROL, 0),
-            (VK_LSHIFT, 0),
-            (VK_RSHIFT, 0),
-            (VK_LWIN, 0),
-            (VK_RWIN, KEYEVENTF_EXTENDEDKEY),
+            (VK_LMENU, 0u32, true),
+            (VK_RMENU, KEYEVENTF_EXTENDEDKEY, true),
+            (VK_LCONTROL, 0, false),
+            (VK_RCONTROL, KEYEVENTF_EXTENDEDKEY, false),
+            (VK_CONTROL, 0, false),
+            (VK_LSHIFT, 0, false),
+            (VK_RSHIFT, 0, false),
         ];
         let mut release = Vec::new();
-        for (vk, ext) in mods {
+        let mut need_alt_mask = false;
+        for (vk, ext, is_alt) in mods {
             let down_async = unsafe { GetAsyncKeyState(vk as i32) as u16 & 0x8000 } != 0;
-            if !down_async {
-                // Only send keyup if async state says released? Wait: if physically released recently,
-                // some target windows might still see latched key state; releasing cleanly is harmless when vk=Alt/Ctrl.
-                // However avoid releasing LWIN blindly to prevent popping the Start menu.
-                if vk != VK_LWIN && vk != VK_RWIN {
-                    release.push(key_input(vk, ext | KEYEVENTF_KEYUP));
+            if down_async {
+                if is_alt {
+                    need_alt_mask = true;
                 }
+                release.push(key_input(vk, ext | KEYEVENTF_KEYUP));
             }
+        }
+        if need_alt_mask {
+            release.insert(0, key_input(0xE8, KEYEVENTF_KEYUP));
+            release.insert(0, key_input(0xE8, 0));
         }
         send_inputs(&release);
     }
@@ -235,9 +243,10 @@ fn wait_for_sequence_change(
     clipboard: &mut Clipboard,
     seq_before: u32,
     attempts: usize,
+    step_ms: u64,
 ) -> Option<String> {
     for _ in 0..attempts {
-        thread::sleep(Duration::from_millis(16));
+        thread::sleep(Duration::from_millis(step_ms));
         if win_input::clipboard_sequence() != seq_before {
             return read_clipboard_with_retry(clipboard);
         }
@@ -276,24 +285,46 @@ pub fn capture_selection(
 
     #[cfg(target_os = "windows")]
     let mut captured = {
+        let fg_hwnd = win_input::foreground_window();
         let seq_before = win_input::clipboard_sequence();
         win_input::simulate_copy();
-        let mut first = wait_for_sequence_change(&mut clipboard, seq_before, 30);
-        if first.is_none() {
+        let initial_attempts = if allow_select_all_fallback { 12 } else { 30 };
+        let initial_step_ms = if allow_select_all_fallback { 12 } else { 16 };
+        let mut first = wait_for_sequence_change(
+            &mut clipboard,
+            seq_before,
+            initial_attempts,
+            initial_step_ms,
+        );
+        if first.is_none() && !allow_select_all_fallback {
             // One extra Ctrl+C retry helps first-focus targets (e.g. Electron / Telegram) settle.
             thread::sleep(Duration::from_millis(30));
             let seq_retry = win_input::clipboard_sequence();
             win_input::simulate_copy();
-            first = wait_for_sequence_change(&mut clipboard, seq_retry, 20);
+            first = wait_for_sequence_change(&mut clipboard, seq_retry, 20, 16);
         }
         if first.is_none() && allow_select_all_fallback {
-            win_input::simulate_select_all();
-            thread::sleep(Duration::from_millis(45));
-            let seq_before_all = win_input::clipboard_sequence();
-            win_input::simulate_copy();
-            wait_for_sequence_change(&mut clipboard, seq_before_all, 25)
+            use crate::platform::uia::{EditableKind, probe_focused_input, try_select_all_text};
+            let uia_info = probe_focused_input(fg_hwnd, true);
+            let editable_kind = uia_info.as_ref().and_then(|u| u.editable);
+            if editable_kind == Some(EditableKind::Password) {
+                None
+            } else if editable_kind == Some(EditableKind::NonEditable) {
+                uia_info.and_then(|u| u.selected_text)
+            } else {
+                win_input::simulate_select_all();
+                thread::sleep(Duration::from_millis(55));
+                let seq_before_all = win_input::clipboard_sequence();
+                win_input::simulate_copy();
+                wait_for_sequence_change(&mut clipboard, seq_before_all, 25, 14)
+                    .or_else(|| try_select_all_text(fg_hwnd))
+                    .or_else(|| uia_info.and_then(|u| u.value_text))
+            }
         } else {
-            first
+            first.or_else(|| {
+                crate::platform::uia::probe_focused_input(fg_hwnd, true)
+                    .and_then(|u| u.selected_text)
+            })
         }
     };
 
@@ -357,7 +388,7 @@ pub fn replace_with_text(
     simulate_shortcut('v')?;
 
     if restore_clipboard {
-        thread::sleep(Duration::from_millis(180));
+        thread::sleep(Duration::from_millis(260));
         restore_prev(&mut clipboard, &previous_clipboard);
     }
     Ok(())

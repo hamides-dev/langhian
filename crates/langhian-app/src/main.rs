@@ -515,6 +515,13 @@ impl LanghianApp {
                     self.voice_player_opened_at = Some(Instant::now());
                     self.voice_player_user_dragged = false;
                 }
+                #[cfg(target_os = "windows")]
+                if kind == WindowKind::Hud {
+                    return window::run(id, |w| {
+                        crate::platform::window_pos::show_window_noactivate(w);
+                    })
+                    .discard();
+                }
                 Task::none()
             }
 
@@ -1992,9 +1999,15 @@ impl LanghianApp {
             return window::move_to(id, pos_pt);
         }
 
+        #[cfg(target_os = "windows")]
+        let initially_visible = false;
+        #[cfg(not(target_os = "windows"))]
+        let initially_visible = true;
+
         let (id, open) = window::open(window::Settings {
             size: Size::new(460.0, 56.0),
             position: window::Position::Specific(pos_pt),
+            visible: initially_visible,
             decorations: false,
             transparent: true,
             level: window::Level::AlwaysOnTop,
